@@ -54,11 +54,15 @@ public:
   RelayState update(Change change) {
     xSemaphoreTake(mutex_, portMAX_DELAY);
     const uint32_t now = millis();
-    session_.tick(now);
+    const uint64_t expired = session_.tick(now);
+    if (expired || (powerOwner_ >= firstHandheldToken &&
+                    uint32_t(now - senderSeen_[powerOwner_ - firstHandheldToken]) >= PhoneSession::leaseMs)) clearPower();
     change(session_, now);
     const uint8_t mask = session_.mask();
     const uint32_t confirmedAt = session_.lastCommandAt();
     aux_.update(mask, session_.stopped(), now, idleMs_, confirmedAt);
+    if (!aux_.on()) powerOwner_ = 0;
+    else if (!powerOwner_) powerOwner_ = session_.owner();
     const uint8_t logicalOutputs = (mask & 63) | (aux_.on() ? AuxLatch::command : 0);
     uint8_t physicalOutputs = (mask & 63) ? enableRelay : 0;
     for (int action = 0; action < 7; ++action) {
@@ -78,6 +82,35 @@ public:
     return update([](PhoneSession&, uint32_t) {});
   }
 
+  void senderDisconnected(uint64_t token) {
+    update([&](PhoneSession& session, uint32_t) {
+      if (session.ownedBy(token) || powerOwner_ == token) clearPower();
+      session.end(token);
+    });
+  }
+
+  template<class Change>
+  void senderFrame(int slot, uint32_t arrived, Change change) {
+    update([&](PhoneSession& session, uint32_t now) {
+      senderSeen_[slot] = arrived;
+      change(session, now);
+    });
+  }
+
+  RelayState endPhone(uint64_t token, bool disconnecting) {
+    return update([&](PhoneSession& session, uint32_t) {
+      if (disconnecting && (session.ownedBy(token) || powerOwner_ == token)) clearPower();
+      session.end(token);
+    });
+  }
+
+  void phoneHandoff() {
+    update([&](PhoneSession& session, uint32_t) {
+      session.end(session.owner());
+      clearPower();
+    });
+  }
+
   void configure(const uint8_t* assignment, uint16_t idleMinutes, bool interlock) {
     update([&](PhoneSession& session, uint32_t) {
       setOptions(assignment, idleMinutes);
@@ -86,6 +119,11 @@ public:
   }
 
 private:
+  void clearPower() {
+    aux_ = AuxLatch{};
+    powerOwner_ = 0;
+  }
+
   static constexpr unsigned relayCount = sizeof(relayPins) / sizeof(relayPins[0]);
   static constexpr uint8_t enableRelay = 1u << (relayCount - 1);
 
@@ -123,6 +161,8 @@ private:
 
   PhoneSession session_;
   AuxLatch aux_;
+  uint64_t powerOwner_ = 0;
+  uint32_t senderSeen_[4]{};
   uint8_t assignment_[7]{};
   uint32_t idleMs_ = 3600000;
   SemaphoreHandle_t mutex_ = nullptr;

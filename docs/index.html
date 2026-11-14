@@ -5,8 +5,8 @@
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <meta name="description" content="Install and pair a CraneLink receiver and its handheld senders over USB.">
   <title>CraneLink USB Setup</title>
-  <link rel="stylesheet" href="setup.css">
-  <script type="module" src="setup.js?v=3"></script>
+  <link rel="stylesheet" href="setup.css?v=4">
+  <script type="module" src="setup.js?v=4"></script>
 </head>
 <body>
   <main>
@@ -14,14 +14,30 @@
       <span class="brand">CRANELINK</span>
       <a href="https://github.com/AyushAgarwalleeds/theCraneProject">Source and manual guide ↗</a>
     </header>
-    <h1>USB setup</h1>
-    <p>Install one ESP32-WROOM receiver and up to four handheld senders. The wizard saves their pairing on the boards.</p>
-    <p class="notice">Use a USB data cable and desktop Chrome or Edge. Keep the relay contacts disconnected from the crane.</p>
-    <form id="plan" class="panel">
-      <label for="count">How many senders?</label>
-      <select id="count"><option>1</option><option selected>2</option><option>3</option><option>4</option></select>
-      <button type="submit">Start setup</button>
-    </form>
+    <h1>CraneLink setup</h1>
+    <p class="intro">Pair a receiver with its handhelds, set the receiver’s Wi-Fi, or check a board over USB.</p>
+    <p class="notice">Use desktop Chrome or Edge and a USB data cable. Keep the relay contacts disconnected from the crane.</p>
+    <div class="overview">
+      <form id="plan" class="panel">
+        <h2>Install and pair</h2>
+        <p>Upload both roles in one session to give them matching pairing settings.</p>
+        <label for="count">Number of handhelds</label>
+        <select id="count"><option selected>1</option><option>2</option><option>3</option><option>4</option></select>
+        <button type="submit">Start setup</button>
+      </form>
+      <section class="panel" aria-labelledby="wifi-title">
+        <h2 id="wifi-title">Receiver Wi-Fi</h2>
+        <p>Connect the receiver by USB. Disconnect the phone from receiver Wi-Fi before saving.</p>
+        <form id="network">
+          <label for="networkName">Wi-Fi name</label>
+          <input id="networkName" placeholder="MH14AB4292" required minlength="4" maxlength="12" pattern="[A-Za-z0-9]{4,12}" autocapitalize="characters" autocomplete="off" title="4–12 letters and digits">
+          <label for="networkKey">Wi-Fi password</label>
+          <input id="networkKey" type="password" required minlength="8" maxlength="63" pattern="[!-~]{8,63}" autocomplete="new-password" title="8–63 printable characters without spaces">
+          <button id="saveNetwork" type="submit">Apply over USB</button>
+        </form>
+        <p id="networkStatus" role="status"></p>
+      </section>
+    </div>
     <section id="setup" hidden>
       <ol id="devices" aria-label="Setup progress"></ol>
       <div class="panel">
@@ -48,6 +64,15 @@
       <button id="downloadReport" type="button">Download PDF</button>
     </section>
     <p id="compatibility" role="alert" hidden></p>
+    <details>
+      <summary>Use the handheld and reset Emergency Stop</summary>
+      <ul>
+        <li>Power both boards with the phone disconnected from receiver Wi-Fi. Release every handheld button, then press a direction.</li>
+        <li>Hold Power On/Off for three seconds and release. Repeat to turn Power off.</li>
+        <li>After a stop, release all buttons. Hold Power and Emergency Stop together for three seconds, then release both. Press a direction again to test.</li>
+        <li>For phone control, join the receiver’s Wi-Fi and open <a href="http://192.168.4.1/">192.168.4.1</a>. Disconnect from that Wi-Fi to hand control back to the handheld.</li>
+      </ul>
+    </details>
     <details>
       <summary>USB troubleshooting</summary>
       <ul>

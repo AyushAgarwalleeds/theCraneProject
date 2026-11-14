@@ -6,8 +6,11 @@ class PhoneSession {
 public:
   static constexpr uint32_t leaseMs = 650;
 
-  constexpr void tick(uint32_t now) {
-    if (token_ && uint32_t(now - updated_) >= leaseMs) revoke();
+  constexpr uint64_t tick(uint32_t now) {
+    if (!token_ || uint32_t(now - updated_) < leaseMs) return 0;
+    const uint64_t expired = token_;
+    revoke();
+    return expired;
   }
 
   constexpr bool arm(uint64_t token, uint32_t now) {
@@ -60,6 +63,7 @@ public:
   }
 
   constexpr bool armed() const { return token_ != 0; }
+  constexpr uint64_t owner() const { return token_; }
   constexpr bool ownedBy(uint64_t token) const { return token && token_ == token; }
   constexpr bool stopped() const { return stopped_; }
   constexpr uint8_t mask() const { return mask_; }

@@ -127,6 +127,8 @@ export async function readBoardInfo(command, identity) {
       result.channel = Number(fields[0]);
       result.ready = fields[1] === '1';
     }
+    if (kind === 'FEATURES') result.networkEditable = fields.includes('NETWORK');
+    if (kind === 'PROTOCOL') result.protocol = Number(fields[0]);
     if (kind === 'STATE') {
       result.stopped = fields[0] === '1';
       result.phoneOwns = fields[1] === '1';

@@ -7,18 +7,19 @@ const char phonePage[] PROGMEM = R"CLBENCH(
 <meta name="viewport" content="width=device-width,initial-scale=1">
 <title>CraneLink Phone Bench</title>
 <style>
-:root{color-scheme:dark;--bg:#0f1419;--card:#1b2128;--line:#39424c;--text:#e8ecf1;--blue:#2974cf}
+:root{color-scheme:dark;--bg:#0d171b;--card:#17262b;--line:#35494e;--text:#eef6f3;--blue:#205f92;--accent:#a5e8ce}
 *{box-sizing:border-box}
 body{margin:0;background:var(--bg);color:var(--text);font:16px/1.45 system-ui,sans-serif}
 main{max-width:34rem;margin:auto;padding:1rem}
-h1{font-size:1.35rem;margin:.2rem 0}
+h1{font-size:clamp(1.65rem,6vw,2.4rem);margin:.2rem 0;letter-spacing:-.045em}
+.handoff{padding:.7rem .85rem;border:1px solid var(--line);border-radius:.65rem;color:var(--accent);margin:1rem 0}
 p{margin:.5rem 0}
 button{min-height:3.4rem;border:1px solid var(--line);border-radius:.65rem;color:var(--text);background:var(--card);font:inherit}
 button:focus-visible{outline:3px solid #a6ceff}
 button:disabled{opacity:.48}
 .wide{width:100%;margin:.35rem 0;font-weight:650}
 #run[aria-pressed=true]{background:#145638}
-#stop{background:#662820}
+#stop{background:#7a2e27}
 #message{min-height:3rem;color:#c2d0de}
 .grid{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:.6rem;margin:.5rem 0}
 .jog{touch-action:none;user-select:none;-webkit-user-select:none;font-weight:650}
@@ -35,7 +36,7 @@ progress{width:100%}
 </style>
 <main>
   <h1>CraneLink Phone Bench</h1>
-  <p>Eight-channel relay control</p>
+  <p class="handoff" id="controlSource">Checking control source…</p>
   <button class="wide" id="run" type="button" aria-pressed="false" disabled>Web Run off</button>
   <p id="message" role="status">Connecting to the bench receiver…</p>
   <div class="grid" aria-label="Jog controls">
@@ -44,18 +45,18 @@ progress{width:100%}
     <button class="jog right" data-mask="8" type="button" disabled>Right →</button>
     <button class="jog down" data-mask="2" type="button" disabled>↓ Down</button>
     <button class="jog fwd" data-mask="16" type="button" disabled>Front</button>
-    <button class="jog aux" data-mask="64" type="button" disabled>AUX · hold 3 s</button>
+    <button class="jog aux" data-mask="64" type="button" disabled>Power On/Off · hold 3 s</button>
     <button class="jog back" data-mask="32" type="button" disabled>Back</button>
   </div>
-  <button class="wide" id="stop" type="button" disabled>Stop relays</button>
-  <button class="wide" id="reset" type="button" disabled>Reset stop</button>
+  <button class="wide" id="stop" type="button" disabled>Emergency Stop</button>
+  <button class="wide" id="reset" type="button" disabled>Reset Emergency Stop</button>
   <p class="status">Receiver state <strong id="motion">Unknown</strong></p>
   <p class="status">Commanded relays <strong id="outputs">Unknown</strong></p>
-  <p class="status">AUX <strong id="auxState">Unknown</strong><progress id="auxProgress" max="3000" value="0" hidden aria-label="AUX hold progress"></progress></p>
+  <p class="status">Power <strong id="auxState">Unknown</strong><progress id="auxProgress" max="3000" value="0" hidden aria-label="Power button hold progress"></progress></p>
   <details id="settings">
     <summary>Settings and sender pairing</summary>
     <form id="settingsForm">
-      <label>AUX idle timeout in minutes <input id="idleMinutes" type="number" min="1" max="720" required></label>
+      <label>Power idle timeout in minutes <input id="idleMinutes" type="number" min="1" max="720" required></label>
       <label>Direction control <select id="interlock">
         <option value="0">All directions together</option>
         <option value="1">NO/NC interlock · one direction per axis</option>
@@ -88,6 +89,7 @@ const motion = document.getElementById('motion');
 const outputs = document.getElementById('outputs');
 const auxState = document.getElementById('auxState');
 const auxProgress = document.getElementById('auxProgress');
+const controlSource = document.getElementById('controlSource');
 const settings = document.getElementById('settings');
 const settingsForm = document.getElementById('settingsForm');
 const idleInput = document.getElementById('idleMinutes');
@@ -101,7 +103,7 @@ const peerSlot = document.getElementById('peerSlot');
 const savePeer = document.getElementById('savePeer');
 const peerMessage = document.getElementById('peerMessage');
 const buttons = [...document.querySelectorAll('.jog')];
-const names = {0:'Idle',1:'Up',2:'Down',4:'Left',8:'Right',16:'Front',32:'Back',64:'AUX'};
+const names = {0:'Idle',1:'Up',2:'Down',4:'Left',8:'Right',16:'Front',32:'Back',64:'Power'};
 
 let token = '', sequence = 0, requested = 0, acknowledged = 0;
 let relayMask = null;
@@ -110,6 +112,7 @@ const pointers = new Map();
 let generation = 0, pendingJog = null, transition = false;
 let connected = false, stopped = false, anotherTab = false, checking = false;
 let handheld = false, settingsBusy = false;
+let phoneConnected = false;
 let latestSettings;
 let note = 'Connecting to the bench receiver…';
 
@@ -120,6 +123,8 @@ function render() {
   stop.disabled = !connected || stopped;
   reset.disabled = !connected || !stopped || transition;
   message.textContent = note;
+  controlSource.textContent = !connected ? 'Receiver offline' : stopped ? 'Control locked by Emergency Stop' :
+    phoneConnected ? 'Phone Wi‑Fi connected · disconnect Wi‑Fi to use the handheld' : 'Handheld control';
   const actions = Object.keys(names).filter(bit => acknowledged & Number(bit)).map(bit => names[bit]);
   motion.textContent = !connected ? 'Unknown' : stopped ? 'Stop latched' : actions.join(' + ') || 'Idle';
   if (!connected || relayMask === null) outputs.textContent = 'Unknown';
@@ -141,6 +146,7 @@ function render() {
 }
 
 function updateOutputs(state) {
+  phoneConnected = !!state.phoneConnected;
   relayMask = state.relayMask;
   auxOn = !!state.auxOn;
   auxSeconds = state.auxSeconds || 0;
@@ -164,7 +170,7 @@ async function request(path, fields, keepalive = false) {
   }
 }
 
-function endSession(noteText) {
+function endSession(noteText, leaving = false) {
   const oldToken = token;
   ++generation;
   token = '';
@@ -178,7 +184,8 @@ function endSession(noteText) {
   render();
   if (oldToken) {
     const epoch = generation;
-    void request('end', {token:oldToken}, true).then(state => {
+    const fields = leaving ? {token:oldToken, leaving:'1'} : {token:oldToken};
+    void request('end', fields, true).then(state => {
       if (epoch === generation && !transition) {
         updateOutputs(state);
         render();
@@ -206,7 +213,7 @@ async function enable() {
     }
     token = reply.token;
     await pump();
-    if (epoch === generation && token) note = 'Press and hold one direction or AUX.';
+    if (epoch === generation && token) note = 'Hold a direction or Power On/Off.';
   } catch (error) {
     if (epoch === generation) note = error.message;
   } finally {
@@ -231,7 +238,7 @@ async function pump() {
       render();
     }
   } catch {
-    if (packet.epoch === generation) endSession('Jog interrupted. Check Wi-Fi, then enable Web Run again.');
+    if (packet.epoch === generation) endSession('Jog interrupted. Check Wi-Fi, then enable Web Run again.', true);
   } finally {
     if (pendingJog === packet) {
       pendingJog = null;
@@ -313,14 +320,14 @@ async function refresh() {
   } catch {
     if (epoch !== generation) return;
     connected = false;
-    note = 'Receiver unavailable. Stay connected to the CraneLink-Bench Wi-Fi.';
+    note = 'Receiver unavailable. Stay connected to the receiver’s Wi-Fi.';
   } finally {
     checking = false;
     if (epoch === generation) render();
   }
 }
 
-const assignmentLabels = ['Up', 'Down', 'Left', 'Right', 'Front', 'Back', 'AUX'];
+const assignmentLabels = ['Up', 'Down', 'Left', 'Right', 'Front', 'Back', 'Power On/Off'];
 const assignmentInputs = [];
 function showPeer() {
   const sender = latestSettings?.senders?.[Number(peerSlot.value || 1) - 1];
@@ -432,7 +439,7 @@ run.addEventListener('click', enable);
 stop.addEventListener('click', () => changeStop('stop'));
 reset.addEventListener('click', () => changeStop('reset'));
 function leave() {
-  if (token || transition) endSession('Web Run ended. Enable it again to jog.');
+  if (token || transition) endSession('Web Run ended. Enable it again to jog.', true);
 }
 document.addEventListener('visibilitychange', () => document.hidden ? leave() : void refresh());
 window.addEventListener('blur', leave);

@@ -22,6 +22,7 @@ void loop() {
 #include <Preferences.h>
 #include <esp_mac.h>
 #include <esp_random.h>
+#include <atomic>
 #include "RelayController.h"
 #include "PhonePage.h"
 #include "RadioLink.h"
@@ -33,10 +34,16 @@ const char* requestHeaders[] = {"X-CraneLink-Bench"};
 WebServer server(80);
 RelayController relays;
 char ssid[32];
-char password[17];
+char password[64];
 bool apReady = false;
 bool relaysReady = false;
+bool phoneConnected = false;
+std::atomic<bool> phoneAssociationChanged{false};
+bool restarting = false;
+uint32_t restartRequestedAt = 0;
 uint32_t lastApAttempt = 0;
+uint32_t lastRadioAttempt = 0;
+uint32_t lastPhoneCheck = 0;
 uint8_t receiverMac[6]{};
 RadioLink radio;
 bool radioReady = false;
@@ -44,7 +51,7 @@ SerialLine serialLine;
 struct RadioSession {
   uint64_t nonce = 0;
   uint32_t received = 0, sequence = 0;
-  bool neutral = false, holding = false;
+  bool neutral = false, holding = false, stopHeld = false, resetSeen = false;
 };
 RadioSession radioSessions[maxSenders];
 uint32_t lastBeacon = 0;
@@ -66,6 +73,11 @@ struct ReceiverOptions {
 
 ReceiverOptions options;
 
+struct NetworkSettings {
+  char name[13]{};
+  char key[64]{};
+};
+
 void sendJson(int status, const String& data) {
   server.sendHeader("Cache-Control", "no-store");
   server.send(status, "application/json", data);
@@ -78,6 +90,7 @@ void sendState(const RelayState& state) {
   json += state.armed ? ",\"armed\":true" : ",\"armed\":false";
   json += state.stopped ? ",\"stopped\":true" : ",\"stopped\":false";
   json += state.handheld ? ",\"handheld\":true" : ",\"handheld\":false";
+  json += phoneConnected ? ",\"phoneConnected\":true" : ",\"phoneConnected\":false";
   json += state.auxOn ? ",\"auxOn\":true" : ",\"auxOn\":false";
   json += String(",\"auxSeconds\":") + String(state.auxRemainingSeconds);
   json += String(",\"auxHoldMs\":") + String(state.auxHoldMs) + "}";
@@ -133,11 +146,51 @@ bool validOptions(const ReceiverOptions& next) {
 
 void resetRadioSession(int slot) {
   auto& control = radioSessions[slot];
+  // Keep a recent held Stop visible through a Wi-Fi handoff until a new frame
+  // confirms release or the handheld stops responding.
+  const bool stopHeld = control.stopHeld;
+  const uint32_t received = control.received;
   control = RadioSession{};
+  control.stopHeld = stopHeld;
+  control.received = received;
   control.nonce = randomToken();
-  relays.update([slot](PhoneSession& session, uint32_t) {
-    session.end(firstHandheldToken + slot);
-  });
+  relays.senderDisconnected(firstHandheldToken + slot);
+}
+
+void updatePhoneConnection() {
+  lastPhoneCheck = millis();
+  const bool changed = phoneAssociationChanged.exchange(false);
+  const bool connected = apReady && WiFi.softAPgetStationNum() != 0;
+  if (!changed && phoneConnected == connected) return;
+  phoneConnected = connected;
+  relays.phoneHandoff();
+  for (int slot = 0; slot < maxSenders; ++slot) resetRadioSession(slot);
+  lastBeacon = millis() - 100;
+}
+
+bool senderStopHeld(uint32_t now) {
+  for (const auto& sender : radioSessions) {
+    if (sender.stopHeld && uint32_t(now - sender.received) < PhoneSession::leaseMs) return true;
+  }
+  return false;
+}
+
+bool saveNetwork(const String& name, const String& key) {
+  if (name.length() < 4 || name.length() > 12 || key.length() < 8 || key.length() > 63) return false;
+  for (size_t i = 0; i < name.length(); ++i) {
+    const char c = name[i];
+    if (!(c >= '0' && c <= '9') && !(c >= 'A' && c <= 'Z')) return false;
+  }
+  for (size_t i = 0; i < key.length(); ++i) {
+    const char c = key[i];
+    if (c < 33 || c > 126) return false;
+  }
+  NetworkSettings network;
+  name.toCharArray(network.name, sizeof(network.name));
+  key.toCharArray(network.key, sizeof(network.key));
+  Preferences prefs;
+  return prefs.begin("cranelink-bench", false) &&
+         prefs.putBytes("network", &network, sizeof(network)) == sizeof(network);
 }
 
 void tickRadio() {
@@ -153,18 +206,29 @@ void tickRadio() {
     auto& control = radioSessions[item.slot];
     const uint64_t token = firstHandheldToken + item.slot;
     const uint8_t mask = frame.command;
-    if (frame.nonce != control.nonce || frame.sequence <= control.sequence || mask > stopCommand) continue;
+    if (frame.nonce != control.nonce || frame.sequence <= control.sequence || mask > waitingForRelease) continue;
     control.sequence = frame.sequence;
-    control.received = millis();
-    relays.update([&](PhoneSession& session, uint32_t time) {
+    control.received = item.arrived;
+    control.stopHeld = mask == stopCommand;
+    const bool newReset = mask == resetStopCommand && !control.resetSeen;
+    control.resetSeen = mask == resetStopCommand;
+    if (mask == waitingForRelease) relays.senderDisconnected(token);
+    relays.senderFrame(item.slot, item.arrived, [&](PhoneSession& session, uint32_t time) {
       if (mask == stopCommand) {
         session.stop();
         for (auto& sender : radioSessions) sender.neutral = sender.holding = false;
+      } else if (mask == resetStopCommand) {
+        if (newReset && session.stopped() && !senderStopHeld(time)) {
+          session.reset();
+          for (auto& sender : radioSessions) sender.neutral = sender.holding = false;
+        }
+      } else if (mask == waitingForRelease) {
+        control.neutral = control.holding = false;
       } else if (!mask) {
         session.end(token);
         control.neutral = true;
         control.holding = false;
-      } else if (control.neutral && !session.stopped()) {
+      } else if (!phoneConnected && !phoneAssociationChanged.load() && control.neutral && !session.stopped()) {
         if (control.holding && !session.ownedBy(token)) {
           control.neutral = control.holding = false;
           return;
@@ -331,6 +395,8 @@ void receiverSerial(String line) {
   if (line == "setup-info") {
     if (apReady) Serial.printf("CL WIFI %s %s %s\n", ssid, password, WiFi.softAPIP().toString().c_str());
     else Serial.println("CL WIFI DOWN");
+    Serial.println("CL FEATURES NETWORK");
+    Serial.printf("CL PROTOCOL %u\n", unsigned(wireVersion));
     Serial.printf("CL RADIO %u %u\n", unsigned(WiFi.channel()), unsigned(radioReady));
     const RelayState state = relays.state();
     Serial.printf("CL STATE %u %u\n", unsigned(state.stopped),
@@ -346,6 +412,30 @@ void receiverSerial(String line) {
                     sender.configured() ? formatMac(sender.mac).c_str() : "-", unsigned(linked));
     }
     Serial.println("CL INFO DONE");
+    return;
+  }
+  if (line.startsWith("wifi-set ")) {
+    const int separator = line.indexOf(' ', 9);
+    if (separator < 0) {
+      Serial.println("CL ERROR Enter a Wi-Fi name and password.");
+      return;
+    }
+    const String name = line.substring(9, separator);
+    const String key = line.substring(separator + 1);
+    const RelayState state = relays.state();
+    updatePhoneConnection();
+    if (state.armed || state.relayMask || phoneConnected) {
+      Serial.println("CL ERROR Disconnect the phone from receiver Wi-Fi, turn off Power and release the controls.");
+      return;
+    }
+    if (!saveNetwork(name, key)) {
+      Serial.println("CL ERROR Wi-Fi settings could not be saved. Check the name and password.");
+      return;
+    }
+    relays.phoneHandoff();
+    restarting = true;
+    restartRequestedAt = millis();
+    Serial.println("CL WIFI SAVED");
     return;
   }
   if (line.startsWith("peers-begin ")) {
@@ -421,10 +511,15 @@ void receiverSerial(String line) {
 
 void handleArm() {
   if (!allowPost()) return;
+  updatePhoneConnection();
+  if (!phoneConnected) {
+    sendJson(409, "{\"error\":\"Join the receiver Wi-Fi first.\"}");
+    return;
+  }
   const uint64_t token = randomToken();
   bool armed;
   const RelayState state = relays.update([&](PhoneSession& session, uint32_t now) {
-    armed = session.arm(token, now);
+    armed = !phoneAssociationChanged.load() && session.arm(token, now);
   });
   if (!armed) {
     sendJson(409, state.stopped ? "{\"error\":\"Stop is latched.\"}"
@@ -439,6 +534,7 @@ void handleArm() {
 
 void handleJog() {
   if (!allowPost()) return;
+  updatePhoneConnection();
   uint64_t token;
   uint32_t sequence, mask;
   if (!readToken(server.arg("token"), token) || token >= firstHandheldToken ||
@@ -449,7 +545,7 @@ void handleJog() {
   }
   bool accepted;
   const RelayState state = relays.update([&](PhoneSession& session, uint32_t now) {
-    accepted = session.jog(token, sequence, mask, now);
+    accepted = phoneConnected && !phoneAssociationChanged.load() && session.jog(token, sequence, mask, now);
   });
   if (!accepted) {
     sendJson(409, "{\"error\":\"Web Run ended. Release and enable it again.\"}");
@@ -465,7 +561,24 @@ void handleEnd() {
     sendJson(400, "{\"error\":\"Invalid session.\"}");
     return;
   }
-  sendState(relays.update([token](PhoneSession& session, uint32_t) { session.end(token); }));
+  sendState(relays.endPhone(token, server.arg("leaving") == "1"));
+}
+
+void tryRadio() {
+  lastRadioAttempt = millis();
+  radioReady = (WiFi.channel() == radioChannel ||
+                esp_wifi_set_channel(radioChannel, WIFI_SECOND_CHAN_NONE) == ESP_OK) && radio.begin();
+  if (!radioReady) {
+    Serial.println("ESP-NOW unavailable. Retrying.");
+    return;
+  }
+  for (int slot = 0; slot < maxSenders; ++slot) {
+    if (!radio.setPeer(options.senders[slot], slot)) {
+      radioReady = false;
+      Serial.printf("Could not load sender %d. Retrying.\n", slot + 1);
+    }
+    resetRadioSession(slot);
+  }
 }
 
 void startAp() {
@@ -474,6 +587,10 @@ void startAp() {
     Serial.println("Wi-Fi mode failed. Retrying.");
     return;
   }
+  WiFi.setSleep(false);
+  uint8_t actualMac[6]{};
+  if (esp_wifi_get_mac(WIFI_IF_STA, actualMac) == ESP_OK)
+    memcpy(receiverMac, actualMac, sizeof(receiverMac));
   if (!password[0]) {
     Preferences prefs;
     bool saved = prefs.begin("cranelink-bench", false);
@@ -487,23 +604,13 @@ void startAp() {
     if (saved) prefs.end();
   }
   if (!WiFi.softAPConfig(benchIp, benchIp, IPAddress(255, 255, 255, 0)) ||
-      !WiFi.softAP(ssid, password, radioChannel, 0, 4)) {
+      !WiFi.softAP(ssid, password, radioChannel, 0, 1)) {
     Serial.println("Access point failed to start. Retrying.");
     return;
   }
   server.begin();
   apReady = true;
-  WiFi.setSleep(false);
-  uint8_t actualMac[6]{};
-  if (esp_wifi_get_mac(WIFI_IF_STA, actualMac) == ESP_OK)
-    memcpy(receiverMac, actualMac, sizeof(receiverMac));
-  radioReady = radio.begin();
-  if (!radioReady) Serial.println("ESP-NOW could not start. Phone controls remain available.");
-  for (int slot = 0; slot < maxSenders; ++slot) {
-    if (options.senders[slot].configured() && !radio.setPeer(options.senders[slot], slot))
-      Serial.printf("Could not load sender %d\n", slot + 1);
-    resetRadioSession(slot);
-  }
+  esp_wifi_set_inactive_time(WIFI_IF_AP, 10);
   Serial.printf("Wi-Fi network: %s\nWi-Fi password: %s\nOpen: http://192.168.4.1/\n", ssid, password);
   Serial.printf("Receiver STA MAC: %s, channel %u\n", formatMac(receiverMac).c_str(), unsigned(radioChannel));
 }
@@ -533,12 +640,29 @@ void setup() {
     return;
   }
   Serial.println("\nCraneLink Phone Bench. Physical relay outputs enabled.");
-  uint8_t mac[6] = {};
-  esp_read_mac(mac, ESP_MAC_WIFI_SOFTAP);
   esp_read_mac(receiverMac, ESP_MAC_WIFI_STA);
-  snprintf(ssid, sizeof(ssid), "CraneLink-Bench-%02X%02X%02X",
-           unsigned(mac[3]), unsigned(mac[4]), unsigned(mac[5]));
+  uint64_t id = 0;
+  for (uint8_t byte : receiverMac) id = (id << 8) | byte;
+  for (int i = 9; i >= 0; --i) {
+    ssid[i] = "0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZ"[id % 36];
+    id /= 36;
+  }
+  NetworkSettings network;
+  if (prefs.begin("cranelink-bench", true) &&
+      prefs.getBytesLength("network") == sizeof(network) &&
+      prefs.getBytes("network", &network, sizeof(network)) == sizeof(network) &&
+      network.name[0] && !network.name[12] && network.key[0] && !network.key[63]) {
+    strcpy(ssid, network.name);
+    strcpy(password, network.key);
+  }
+  prefs.end();
   WiFi.persistent(false);
+  WiFi.onEvent([](arduino_event_id_t event) {
+    if (event == ARDUINO_EVENT_WIFI_AP_STACONNECTED || event == ARDUINO_EVENT_WIFI_AP_STADISCONNECTED) {
+      phoneAssociationChanged.store(true);
+      relays.phoneHandoff();
+    }
+  });
   server.collectHeaders(requestHeaders, 1);
   server.on("/", HTTP_GET, [] {
     server.sendHeader("Cache-Control", "no-store");
@@ -558,12 +682,17 @@ void setup() {
   });
   server.on("/api/reset", HTTP_POST, [] {
     if (!allowPost()) return;
+    if (senderStopHeld(millis())) {
+      sendJson(409, "{\"error\":\"Release Emergency Stop on the handheld first.\"}");
+      return;
+    }
     // Reset acknowledges an existing latch only. It never starts Web Run.
     sendState(relays.update([](PhoneSession& session, uint32_t) {
       if (session.stopped()) session.reset();
     }));
   });
   startAp();
+  tryRadio();
 }
 
 void loop() {
@@ -572,11 +701,16 @@ void loop() {
     return;
   }
   serialLine.poll(receiverSerial);
-  if (apReady) {
-    tickRadio();
-    server.handleClient();
+  if (restarting) {
+    if (uint32_t(millis() - restartRequestedAt) >= 250) ESP.restart();
+    delay(1);
+    return;
   }
-  else if (uint32_t(millis() - lastApAttempt) >= 3000) startAp();
+  if (!apReady && uint32_t(millis() - lastApAttempt) >= 3000) startAp();
+  if (uint32_t(millis() - lastPhoneCheck) >= 25) updatePhoneConnection();
+  if (!radioReady && uint32_t(millis() - lastRadioAttempt) >= 3000) tryRadio();
+  if (radioReady) tickRadio();
+  if (apReady) server.handleClient();
   const RelayState state = relays.state();
   static uint8_t lastMask = 255;
   static bool lastStop = false;

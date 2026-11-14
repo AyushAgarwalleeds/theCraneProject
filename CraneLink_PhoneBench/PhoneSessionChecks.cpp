@@ -1,5 +1,6 @@
 #include "PhoneSession.h"
 #include "AuxLatch.h"
+#include "StopResetGesture.h"
 
 namespace {
 constexpr bool ownerAndExpiry() {
@@ -84,4 +85,20 @@ constexpr bool auxToggleAndStop() {
 
 static_assert(auxHoldAndExpiry(), "AUX should latch once and expire only after inactivity.");
 static_assert(auxToggleAndStop(), "AUX needs a new hold, and Stop always clears it.");
+
+constexpr bool resetRequiresNeutralAndRelease() {
+  StopResetGesture gesture;
+  const auto both = StopResetGesture::buttons;
+  if (gesture.update(both, 0) || gesture.update(both, 3001) || gesture.update(0, 3002)) return false;
+  if (gesture.update(both, 3100) || gesture.update(both, 6099) || gesture.update(0, 6100)) return false;
+  if (gesture.update(both, 6200) || gesture.update(both, 9200) || gesture.update(128, 9201)) return false;
+  if (gesture.update(0, 9202) || !gesture.update(0, 9227) ||
+      !gesture.update(0, 9476) || gesture.update(0, 9477)) return false;
+  gesture.update(both, 10000);
+  gesture.update(both, 13000);
+  gesture.requireRelease();
+  return !gesture.update(0, 13001);
+}
+
+static_assert(resetRequiresNeutralAndRelease(), "Reset requires a new hold and release after reconnect.");
 }

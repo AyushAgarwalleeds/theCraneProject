@@ -1,6 +1,6 @@
 import {ESPLoader, Transport} from './vendor/esptool.js';
-import {acknowledge, FirmwareUpdateRequired, identify, readBoardInfo, withBoard} from './serial.mjs?v=3';
-import {renderReport, downloadReport} from './report.mjs';
+import {acknowledge, FirmwareUpdateRequired, identify, readBoardInfo, withBoard} from './serial.mjs?v=4';
+import {renderReport, downloadReport} from './report.mjs?v=4';
 
 const parts = [
   ['bootloader.bin', 0x1000],
@@ -8,15 +8,17 @@ const parts = [
   ['boot_app0.bin', 0xe000],
   ['app.bin', 0x10000],
 ];
+const radioProtocol = 4;
 const get = id => document.getElementById(id);
 const connect = get('connect');
 const configure = get('configure');
 const progress = get('progress');
 const status = get('status');
 const restart = get('restart');
+const saveNetwork = get('saveNetwork');
 const supported = window.isSecureContext && !!navigator.serial;
 let plan, step, receiver, installed, busy;
-let checkedBoard, readingInputs = false;
+let checkedBoard, readingInputs = false, stopInspection = false;
 const configuredBoards = [];
 const observedBoards = new Map();
 const used = new Set();
@@ -59,6 +61,7 @@ function updateStep() {
   configure.hidden = complete || !installed;
   progress.hidden = true;
   connect.disabled = configure.disabled = restart.disabled = busy;
+  saveNetwork.disabled = busy || !supported;
 }
 
 function start(count) {
@@ -79,7 +82,7 @@ function start(count) {
 
 async function readFirmware(role) {
   return Promise.all(parts.map(async ([name, address]) => {
-    const response = await fetch('./firmware/' + role + '/' + name, {cache:'no-store'});
+    const response = await fetch('./firmware/' + role + '/' + name + '?v=' + radioProtocol, {cache:'no-store'});
     if (!response.ok) throw Error('Firmware file unavailable: ' + name);
     const data = new Uint8Array(await response.arrayBuffer());
     if (!data.length || (name === 'app.bin' && data[0] !== 0xe9))
@@ -121,7 +124,8 @@ function serialSetup(port, role, factory, restart) {
     const board = await identify(command, role, factory);
     if (used.has(board.factory)) throw Error('This board was already assigned. Connect the next board.');
     // Check the firmware before writing any new pairing settings.
-    await readBoardInfo(command, board);
+    const before = await readBoardInfo(command, board);
+    if (before.protocol !== radioProtocol) throw new FirmwareUpdateRequired();
     if (role === 'receiver') {
       await acknowledge(command, 'peers-begin ' + plan.length, 'CL PEERS READY');
       for (const sender of plan)
@@ -186,10 +190,11 @@ function refreshReport() {
 get('inspect').addEventListener('click', async () => {
   if (busy) return;
   if (readingInputs) {
-    readingInputs = false;
+    stopInspection = true;
     return;
   }
   readingInputs = true;
+  stopInspection = false;
   const button = get('inspect');
   const note = get('inspectStatus');
   note.textContent = 'Select the USB port of the board to check.';
@@ -198,7 +203,7 @@ get('inspect').addEventListener('click', async () => {
     await withBoard(port, async command => {
       const board = await identify(command);
       button.textContent = 'Stop USB check';
-      while (readingInputs) {
+      while (!stopInspection) {
         checkedBoard = await readBoardInfo(command, board);
         observedBoards.set(board.factory, checkedBoard);
         note.textContent = board.role === 'sender'
@@ -215,6 +220,44 @@ get('inspect').addEventListener('click', async () => {
     button.textContent = 'Check connected board';
   }
 });
+
+get('network').addEventListener('submit', async event => {
+  event.preventDefault();
+  const status = get('networkStatus');
+  if (busy || readingInputs) {
+    status.textContent = 'Finish the upload or stop the USB check first.';
+    return;
+  }
+  const name = get('networkName').value.toUpperCase();
+  const password = get('networkKey').value;
+  busy = saveNetwork.disabled = true;
+  status.textContent = 'Select the receiver’s USB port.';
+  try {
+    const port = await navigator.serial.requestPort();
+    const factory = await withBoard(port, async command => {
+      const identity = await identify(command, 'receiver');
+      const info = await readBoardInfo(command, identity);
+      if (!info.networkEditable) throw new FirmwareUpdateRequired();
+      await acknowledge(command, 'wifi-set ' + name + ' ' + password, 'CL WIFI SAVED');
+      return identity.factory;
+    });
+    status.textContent = 'Saved. Waiting for the receiver to restart…';
+    get('networkKey').value = '';
+    await new Promise(resolve => setTimeout(resolve, 1200));
+    const board = await withBoard(port, async command => readBoardInfo(command,
+      await identify(command, 'receiver', factory)));
+    if (board.ssid !== name || board.password !== password)
+      throw Error('Settings were saved. Use Check connected board to verify the active Wi-Fi.');
+    observedBoards.set(board.factory, board);
+    checkedBoard = board;
+    refreshReport();
+    status.textContent = 'Verified. Join ' + name + ' on your phone.';
+  } catch (error) {
+    status.textContent = error.name === 'NotFoundError' ? 'No port selected.' : error.message;
+  } finally {
+    busy = saveNetwork.disabled = false;
+  }
+});
 get('downloadReport').addEventListener('click', async () => {
   await downloadReport(reportBoards(), checkedBoard).catch(() => {
     get('inspectStatus').textContent = 'Could not create the PDF. Reload the page and try again.';
@@ -223,6 +266,7 @@ get('downloadReport').addEventListener('click', async () => {
 
 get('plan').addEventListener('submit', event => {
   event.preventDefault();
+  if (busy) return;
   start(Number(get('count').value));
 });
 connect.addEventListener('click', () => void run(true));
@@ -234,6 +278,7 @@ restart.addEventListener('click', () => {
 });
 if (!supported) {
   get('inspect').disabled = true;
+  saveNetwork.disabled = true;
   get('plan').querySelector('button').disabled = true;
   const alert = get('compatibility');
   alert.hidden = false;

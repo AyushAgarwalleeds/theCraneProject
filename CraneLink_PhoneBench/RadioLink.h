@@ -10,7 +10,9 @@
 
 constexpr uint8_t radioChannel = 6;
 constexpr uint8_t stopCommand = 128;
-constexpr uint8_t wireVersion = 3;
+constexpr uint8_t resetStopCommand = 129;
+constexpr uint8_t waitingForRelease = 130;
+constexpr uint8_t wireVersion = 4;
 constexpr int maxSenders = 4;
 
 struct PeerSettings {
@@ -86,7 +88,8 @@ inline bool parseKey(const String& text, uint8_t* key) {
 class RadioLink {
 public:
   bool begin() {
-    queue_ = xQueueCreate(8, sizeof(ReceivedFrame));
+    if (started_) return true;
+    if (!queue_) queue_ = xQueueCreate(8, sizeof(ReceivedFrame));
     if (!queue_ || esp_wifi_get_mac(WIFI_IF_STA, ownMac_) != ESP_OK ||
         esp_now_init() != ESP_OK) return false;
     instance_ = this;

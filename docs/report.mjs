@@ -1,6 +1,6 @@
 const inputs = [
   ['Up', 4], ['Down', 32], ['Left', 33], ['Right', 25],
-  ['Front', 26], ['Back', 27], ['AUX', 13], ['Stop', 14],
+  ['Front', 26], ['Back', 27], ['Power', 13], ['Emergency Stop', 14],
 ];
 const resets = {1:'Power-on', 2:'External reset', 3:'Software reset', 4:'Panic', 5:'Interrupt watchdog',
   6:'Task watchdog', 7:'Watchdog', 8:'Deep sleep', 9:'Brownout', 10:'SDIO'};
@@ -17,6 +17,7 @@ function reportSections(installed, checked) {
       ['Station MAC', board.mac],
       ['Factory MAC', board.factory],
       ['Radio channel', board.channel || 'Unavailable'],
+      ['Radio protocol', board.protocol ?? 'Older firmware'],
     ];
     if (board.role === 'receiver') {
       rows.push(['Wi-Fi network', board.ssid || 'Access point unavailable']);
@@ -28,8 +29,8 @@ function reportSections(installed, checked) {
         rows.push(['Last reset', resets[board.resetReason] || 'Code ' + board.resetReason],
           ['Uptime when read', board.uptime + ' seconds']);
       }
-      if (board.stopped) rows.push(['Stop', 'Latched - release Stop, then reset on the phone']);
-      if (board.phoneOwns) rows.push(['Control owner', 'Phone - turn Web Run off to use the sender']);
+      if (board.stopped) rows.push(['Emergency Stop', 'Latched']);
+      if (board.clients) rows.push(['Control owner', 'Phone Wi-Fi - disconnect to use the handheld']);
       for (const slot of board.slots)
         rows.push(['Sender slot ' + slot.slot, slot.mac + (slot.linked ? ' (heard)' : ' (waiting)')]);
     } else {
@@ -120,7 +121,7 @@ export async function buildReport(installed, checked) {
   row('Up / Down', 'GPIO4 / GPIO32');
   row('Left / Right', 'GPIO33 / GPIO25');
   row('Front / Back', 'GPIO26 / GPIO27');
-  row('AUX / Stop', 'GPIO13 / GPIO14');
+  row('Power / Emergency Stop', 'GPIO13 / GPIO14');
   return document.save();
 }
 

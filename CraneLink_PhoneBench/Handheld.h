@@ -5,6 +5,7 @@
 #include <esp_wifi.h>
 #include "RadioLink.h"
 #include "SerialLine.h"
+#include "StopResetGesture.h"
 
 class Handheld {
 public:
@@ -42,6 +43,9 @@ public:
     const uint8_t raw = readButtons(now);
     if (nonce_ && uint32_t(now - lastBeacon_) >= 650) {
       nonce_ = 0;
+      needNeutral_ = true;
+      neutralSince_ = now;
+      resetGesture_.requireRelease();
       Serial.println("Receiver link lost.");
     }
     ReceivedFrame item;
@@ -52,9 +56,13 @@ public:
       lastBeacon_ = millis();
       if (nonce_ != frame.nonce) {
         nonce_ = frame.nonce;
-        sequence_ = 0;
+        if (sequenceNonce_ != nonce_) {
+          sequence_ = 0;
+          sequenceNonce_ = nonce_;
+        }
         needNeutral_ = true;
         neutralSince_ = now;
+        resetGesture_.requireRelease();
       }
     }
     if (!nonce_) return;
@@ -90,11 +98,12 @@ private:
   uint8_t command(uint8_t raw, uint32_t now) {
     if (raw) neutralSince_ = now;
     else if (uint32_t(now - neutralSince_) >= 25) needNeutral_ = false;
+    if (resetGesture_.update(raw, now)) return resetStopCommand;
     if (raw & stopCommand) {
       needNeutral_ = true;
       return stopCommand;
     }
-    return needNeutral_ ? 0 : filtered_;
+    return needNeutral_ ? waitingForRelease : filtered_;
   }
 
   void processLine(String line) {
@@ -111,6 +120,7 @@ private:
       return;
     }
     if (line == "setup-info") {
+      Serial.printf("CL PROTOCOL %u\n", unsigned(wireVersion));
       Serial.printf("CL TARGET %s %u %u %u\n",
                     setup_.peer.configured() ? formatMac(setup_.peer.mac).c_str() : "-",
                     unsigned(WiFi.channel()), unsigned(ready_ && link_.paired()), unsigned(nonce_ != 0));
@@ -181,8 +191,10 @@ private:
   bool storageReady_ = false;
   bool needNeutral_ = true;
   uint64_t nonce_ = 0;
+  uint64_t sequenceNonce_ = 0;
   uint32_t sequence_ = 0, lastBeacon_ = 0, lastSend_ = 0, neutralSince_ = 0;
   uint32_t changed_[8]{};
   uint8_t lastRaw_ = 0, filtered_ = 0, sent_ = 0;
   SerialLine serial_;
+  StopResetGesture resetGesture_;
 };

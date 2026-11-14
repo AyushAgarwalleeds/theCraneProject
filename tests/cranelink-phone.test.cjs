@@ -95,7 +95,7 @@ test('a rejected heartbeat ends Web Run and requires a new explicit enable', asy
   p.buttons[0].events.pointerdown(touch);
   await p.tick();
   assert.deepEqual(jogs(p), [0, 0]);
-  assert.deepEqual(p.calls.at(-1), {path:'end', token:sessionId});
+  assert.deepEqual(p.calls.at(-1), {path:'end', token:sessionId, leaving:'1'});
   assert.match(p.elements.message.textContent, /enable Web Run again/);
 });
 
@@ -125,7 +125,7 @@ test('a second tab observes Web Run without joining the existing session', async
   assert.deepEqual(p.calls.map(call => call.path), ['status', 'status']);
 });
 
-test('idle status still shows a latched AUX relay and its remaining time', async () => {
+test('idle status still shows a latched Power relay and its remaining time', async () => {
   const p = await page();
   p.mock(path => path === 'status' ? reply({
     armed:false, stopped:false, mask:0, relayMask:64, auxOn:true, auxSeconds:125
