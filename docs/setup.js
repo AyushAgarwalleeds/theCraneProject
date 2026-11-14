@@ -1,5 +1,5 @@
 import {ESPLoader, Transport} from './vendor/esptool.js';
-import {acknowledge, identify, readBoardInfo, withBoard} from './serial.mjs';
+import {acknowledge, FirmwareUpdateRequired, identify, readBoardInfo, withBoard} from './serial.mjs?v=3';
 import {renderReport, downloadReport} from './report.mjs';
 
 const parts = [
@@ -110,17 +110,18 @@ async function flash(port, role) {
         message('Uploading ' + role + ' firmware… ' + Math.floor(progress.value) + '%');
       },
     });
-    await loader.after('hard_reset');
     return factory;
   } finally {
     if (port.readable || port.writable) await transport.disconnect();
   }
 }
 
-function serialSetup(port, role, factory) {
+function serialSetup(port, role, factory, restart) {
   return withBoard(port, async command => {
     const board = await identify(command, role, factory);
     if (used.has(board.factory)) throw Error('This board was already assigned. Connect the next board.');
+    // Check the firmware before writing any new pairing settings.
+    await readBoardInfo(command, board);
     if (role === 'receiver') {
       await acknowledge(command, 'peers-begin ' + plan.length, 'CL PEERS READY');
       for (const sender of plan)
@@ -141,7 +142,7 @@ function serialSetup(port, role, factory) {
     if (!info.ready || info.mac !== sender.mac || info.target !== receiver)
       throw Error('Sender identity or radio setup could not be confirmed. Retry pairing on this board.');
     return {...info, slot:step};
-  });
+  }, {restart});
 }
 
 async function run(upload) {
@@ -154,7 +155,7 @@ async function run(upload) {
     const factory = upload ? await flash(port, role) : installed;
     installed = factory || true;
     message('Saving pairing on the ' + role + '…');
-    const board = await serialSetup(port, role, typeof factory === 'string' ? factory : undefined);
+    const board = await serialSetup(port, role, typeof factory === 'string' ? factory : undefined, upload);
     used.add(board.factory);
     observedBoards.delete(board.factory);
     configuredBoards.push(board);
@@ -163,6 +164,7 @@ async function run(upload) {
     installed = false;
     message('Pairing saved on the ' + role + '. Power both boards for the radio check.');
   } catch (error) {
+    if (error instanceof FirmwareUpdateRequired) installed = false;
     message(error.name === 'NotFoundError' ? 'No port selected. Try again when connected.' : error.message, true);
   } finally {
     busy = false;

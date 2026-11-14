@@ -1,5 +1,19 @@
-export async function withBoard(port, work) {
-  await port.open({baudRate:115200, flowControl:'none'});
+class SerialReplyTimeout extends Error {}
+
+export class FirmwareUpdateRequired extends Error {
+  constructor() {
+    super('This board is running older CraneLink firmware. Use Connect and upload for this board.');
+  }
+}
+
+export async function withBoard(port, work, {restart = false} = {}) {
+  try {
+    await port.open({baudRate:115200, flowControl:'none'});
+  } catch (error) {
+    if (error.name === 'NetworkError' || error.name === 'InvalidStateError')
+      throw Error('Could not open the USB port. Close any app or tab using it, then reconnect the board.');
+    throw error;
+  }
   let reader, writer, reading, request;
   async function command(text, accept, timeout = 3500) {
     const encoder = new TextEncoder();
@@ -7,7 +21,7 @@ export async function withBoard(port, work) {
     try {
       return await new Promise((resolve, reject) => {
         request = {accept, resolve, reject};
-        timer = setTimeout(() => reject(Error('No reply to ' + text.split(' ')[0] + '.')), timeout);
+        timer = setTimeout(() => reject(new SerialReplyTimeout('No reply to ' + text.split(' ')[0] + '.')), timeout);
         writer.write(encoder.encode('\n' + text + '\n')).catch(reject);
       });
     } finally {
@@ -16,6 +30,11 @@ export async function withBoard(port, work) {
     }
   }
   try {
+    if (restart) {
+      // Pulse EN with GPIO0 released so the new firmware starts from flash.
+      await port.setSignals({dataTerminalReady:false, requestToSend:true});
+      await new Promise(resolve => setTimeout(resolve, 100));
+    }
     await port.setSignals({dataTerminalReady:false, requestToSend:false});
     reader = port.readable.getReader();
     writer = port.writable.getWriter();
@@ -32,11 +51,15 @@ export async function withBoard(port, work) {
             const line = buffered.slice(0, end).trim();
             buffered = buffered.slice(end + 1);
             if (!request) continue;
+            const result = request.accept(line);
+            if (result instanceof Error) {
+              request.reject(result);
+              continue;
+            }
             if (line.startsWith('CL ERROR ')) {
               request.reject(Error(line.slice(9)));
               continue;
             }
-            const result = request.accept(line);
             if (result !== undefined) request.resolve(result);
           }
           if (buffered.length > 4096) buffered = '';
@@ -60,13 +83,26 @@ const mac = '([0-9a-f]{2}(?::[0-9a-f]{2}){5})';
 const identityPattern = new RegExp('^CL IDENT (RECEIVER|SENDER) ' + mac + ' ' + mac + '$', 'i');
 
 export async function identify(command, role, factory) {
+  let sawOutput = false;
+  let bootloader = false;
+  let brownout = false;
   for (let attempt = 0; attempt < 6; ++attempt) {
     let identity;
     try {
-      identity = await command('identify', line => identityPattern.exec(line) || undefined, 1200);
+      identity = await command('identify', line => {
+        sawOutput ||= !!line;
+        bootloader ||= /waiting for download|DOWNLOAD_BOOT/.test(line);
+        brownout ||= /brownout/i.test(line);
+        return identityPattern.exec(line) || undefined;
+      }, 1200);
     } catch (error) {
-      if (!error.message.startsWith('No reply') || attempt === 5)
-        throw Error('No valid board response. Tap EN (release BOOT), close Serial Monitor, and retry.');
+      if (!(error instanceof SerialReplyTimeout)) throw error;
+      if (attempt === 5) {
+        if (brownout) throw Error('The ESP32 reported a brownout. Test it on USB with the relay module disconnected.');
+        if (bootloader) throw Error('The ESP32 is in upload mode. Release BOOT and tap EN/RESET once.');
+        if (sawOutput) throw Error('The USB port opened, but the board did not identify itself as CraneLink. Check the port or use Connect and upload.');
+        throw Error('The USB port opened, but the ESP32 sent no reply. Tap EN/RESET with BOOT released, then retry.');
+      }
       continue;
     }
     const result = {role:identity[1].toLowerCase(), mac:identity[2].toUpperCase(), factory:identity[3].toUpperCase()};
@@ -79,6 +115,8 @@ export async function identify(command, role, factory) {
 export async function readBoardInfo(command, identity) {
   const result = {...identity, slots:[]};
   await command('setup-info', line => {
+    if (line === 'CL ERROR peer not saved' || line === 'Use: pair RECEIVER_MAC 32_HEX_KEY')
+      return new FirmwareUpdateRequired();
     const [prefix, kind, ...fields] = line.split(' ');
     if (prefix !== 'CL') return;
     if (kind === 'WIFI') {
@@ -108,10 +146,6 @@ export async function readBoardInfo(command, identity) {
     }
     if (kind === 'INPUTS') result.inputs = Number.parseInt(fields[0], 16);
     if (kind === 'INFO' && fields[0] === 'DONE') return true;
-  }).catch(error => {
-    if (error.message.startsWith('No reply'))
-      throw Error('This board needs the updated installer firmware before it can report its details.');
-    throw error;
   });
   return result;
 }
