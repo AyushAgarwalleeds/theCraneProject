@@ -1,0 +1,50 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="description" content="Install and pair a CraneLink receiver and its handheld senders over USB.">
+  <title>CraneLink USB Setup</title>
+  <link rel="stylesheet" href="setup.css">
+  <script type="module" src="setup.js"></script>
+</head>
+<body>
+  <main>
+    <header>
+      <span class="brand">CRANELINK</span>
+      <a href="https://github.com/AyushAgarwalleeds/theCraneProject">Source and manual guide ↗</a>
+    </header>
+    <h1>USB setup</h1>
+    <p>Install one ESP32-WROOM receiver and up to four handheld senders. The wizard saves their pairing on the boards.</p>
+    <p class="notice">Use a USB data cable and desktop Chrome or Edge. Keep the relay contacts disconnected from the crane.</p>
+    <form id="plan" class="panel">
+      <label for="count">How many senders?</label>
+      <select id="count"><option>1</option><option selected>2</option><option>3</option><option>4</option></select>
+      <button type="submit">Start setup</button>
+    </form>
+    <section id="setup" hidden>
+      <ol id="devices" aria-label="Setup progress"></ol>
+      <div class="panel">
+        <h2 id="device">Receiver</h2>
+        <p id="instruction"></p>
+        <p id="pairing-note">The receiver step replaces its saved sender pairings.</p>
+        <button id="connect" type="button">Connect and upload</button>
+        <button id="configure" type="button" class="secondary" hidden>Retry pairing only</button>
+        <progress id="progress" max="100" value="0" hidden aria-label="Firmware upload progress"></progress>
+        <p id="status" role="status"></p>
+        <button id="restart" class="secondary" type="button">Start over</button>
+      </div>
+    </section>
+    <p id="compatibility" role="alert" hidden></p>
+    <details>
+      <summary>USB troubleshooting</summary>
+      <ul>
+        <li>Close Arduino Serial Monitor and any other app using the COM port.</li>
+        <li>If the board cannot enter upload mode, hold BOOT, tap EN, then release BOOT and retry.</li>
+        <li>Use a classic ESP32-WROOM development board with at least 4 MB flash. ESP32-S3, C3 and other chips require different firmware.</li>
+        <li>Keep this tab open until setup finishes. If an upload succeeded but pairing failed, connect the same board and choose Retry pairing only.</li>
+      </ul>
+    </details>
+  </main>
+</body>
+</html>
