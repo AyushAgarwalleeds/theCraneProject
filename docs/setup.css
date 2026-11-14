@@ -32,3 +32,6 @@ progress { width: 100%; margin-top: 1rem; accent-color: var(--accent); }
 #status { min-height: 1.5em; }
 .error { color: #ffb0a5; }
 summary { cursor: pointer; font-weight: 650; }
+.board-details section { border-top: 1px solid var(--line); margin-top: .9rem; }
+.board-details dl { display: grid; grid-template-columns: minmax(7rem, 1fr) minmax(0, 2fr); gap: .25rem .75rem; }
+.board-details dd { margin: 0; overflow-wrap: anywhere; }

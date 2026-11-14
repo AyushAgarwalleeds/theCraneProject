@@ -48,6 +48,8 @@ struct RadioSession {
 };
 RadioSession radioSessions[maxSenders];
 uint32_t lastBeacon = 0;
+PeerSettings pendingPeers[maxSenders];
+int pendingPeerCount = 0, receivedPeerCount = 0;
 
 struct LegacyOptions {
   uint16_t idleMinutes = 60;
@@ -237,6 +239,29 @@ bool savePeer(int slot, const PeerSettings& peer) {
   return true;
 }
 
+bool replacePeers() {
+  const RelayState state = relays.state();
+  if (!radioReady || state.armed || state.relayMask) return false;
+  ReceiverOptions next = options;
+  memcpy(next.senders, pendingPeers, sizeof(next.senders));
+  for (int slot = 0; slot < maxSenders; ++slot) radio.setPeer(PeerSettings{}, slot);
+  bool loaded = true;
+  for (int slot = 0; slot < maxSenders; ++slot) {
+    if (!radio.setPeer(next.senders[slot], slot)) {
+      loaded = false;
+      break;
+    }
+  }
+  if (loaded && saveOptions(next)) options = next;
+  else {
+    loaded = false;
+    for (int slot = 0; slot < maxSenders; ++slot) radio.setPeer(PeerSettings{}, slot);
+    for (int slot = 0; slot < maxSenders; ++slot) radio.setPeer(options.senders[slot], slot);
+  }
+  for (int slot = 0; slot < maxSenders; ++slot) resetRadioSession(slot);
+  return loaded;
+}
+
 void saveSettings() {
   if (!allowPost()) return;
   const RelayState state = relays.state();
@@ -301,6 +326,64 @@ void receiverSerial(String line) {
     uint8_t factory[6]{};
     esp_efuse_mac_get_default(factory);
     Serial.printf("CL IDENT RECEIVER %s %s\n", formatMac(receiverMac).c_str(), formatMac(factory).c_str());
+    return;
+  }
+  if (line == "setup-info") {
+    if (apReady) Serial.printf("CL WIFI %s %s %s\n", ssid, password, WiFi.softAPIP().toString().c_str());
+    else Serial.println("CL WIFI DOWN");
+    Serial.printf("CL RADIO %u %u\n", unsigned(WiFi.channel()), unsigned(radioReady));
+    const RelayState state = relays.state();
+    Serial.printf("CL STATE %u %u\n", unsigned(state.stopped),
+                  unsigned(state.armed && !state.handheld));
+    Serial.printf("CL POWER %d %lu %u\n", int(esp_reset_reason()), millis() / 1000UL,
+                  unsigned(WiFi.softAPgetStationNum()));
+    for (int slot = 0; slot < maxSenders; ++slot) {
+      const auto& sender = options.senders[slot];
+      const auto& control = radioSessions[slot];
+      const bool linked = radio.paired(slot) && control.sequence &&
+                          uint32_t(millis() - control.received) < PhoneSession::leaseMs;
+      Serial.printf("CL SLOT %d %s %u\n", slot + 1,
+                    sender.configured() ? formatMac(sender.mac).c_str() : "-", unsigned(linked));
+    }
+    Serial.println("CL INFO DONE");
+    return;
+  }
+  if (line.startsWith("peers-begin ")) {
+    uint32_t count;
+    pendingPeerCount = receivedPeerCount = 0;
+    if (!readDecimal(line.substring(12), count) || count < 1 || count > maxSenders) {
+      Serial.println("CL ERROR invalid sender count");
+      return;
+    }
+    for (auto& peer : pendingPeers) peer = PeerSettings{};
+    pendingPeerCount = count;
+    Serial.println("CL PEERS READY");
+    return;
+  }
+  if (line.startsWith("peers-add ")) {
+    PeerSettings peer;
+    const int separator = line.indexOf(' ', 10);
+    bool valid = receivedPeerCount < pendingPeerCount && separator >= 0 &&
+                 parseMac(line.substring(10, separator), peer.mac) &&
+                 parseKey(line.substring(separator + 1), peer.key) && peer.configured() &&
+                 memcmp(peer.mac, receiverMac, sizeof(peer.mac));
+    for (int i = 0; i < receivedPeerCount && valid; ++i)
+      valid = memcmp(peer.mac, pendingPeers[i].mac, sizeof(peer.mac)) != 0;
+    if (!valid) {
+      pendingPeerCount = receivedPeerCount = 0;
+      Serial.println("CL ERROR invalid or duplicate sender");
+      return;
+    }
+    pendingPeers[receivedPeerCount++] = peer;
+    Serial.println("CL PEERS ADDED");
+    return;
+  }
+  if (line == "peers-save") {
+    if (pendingPeerCount && receivedPeerCount == pendingPeerCount && replacePeers())
+      Serial.println("CL PEERS SAVED");
+    else
+      Serial.println("CL ERROR could not save sender slots. Release all controls and turn off Web Run and AUX.");
+    pendingPeerCount = receivedPeerCount = 0;
     return;
   }
   if (line == "clear-peers") {
@@ -410,6 +493,10 @@ void startAp() {
   }
   server.begin();
   apReady = true;
+  WiFi.setSleep(false);
+  uint8_t actualMac[6]{};
+  if (esp_wifi_get_mac(WIFI_IF_STA, actualMac) == ESP_OK)
+    memcpy(receiverMac, actualMac, sizeof(receiverMac));
   radioReady = radio.begin();
   if (!radioReady) Serial.println("ESP-NOW could not start. Phone controls remain available.");
   for (int slot = 0; slot < maxSenders; ++slot) {
@@ -423,6 +510,7 @@ void startAp() {
 
 void setup() {
   Serial.begin(115200);
+  Serial.printf("Receiver reset reason: %d\n", int(esp_reset_reason()));
   Preferences prefs;
   if (prefs.begin("cranelink-bench", true)) {
     ReceiverOptions stored;
@@ -483,9 +571,9 @@ void loop() {
     delay(1000);
     return;
   }
+  serialLine.poll(receiverSerial);
   if (apReady) {
     tickRadio();
-    serialLine.poll(receiverSerial);
     server.handleClient();
   }
   else if (uint32_t(millis() - lastApAttempt) >= 3000) startAp();

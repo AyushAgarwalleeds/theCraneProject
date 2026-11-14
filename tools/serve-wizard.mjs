@@ -4,7 +4,8 @@ import {extname, resolve, sep} from 'node:path';
 import {fileURLToPath} from 'node:url';
 
 const root = fileURLToPath(new URL('../docs', import.meta.url));
-const types = {'.html':'text/html', '.js':'text/javascript', '.css':'text/css', '.bin':'application/octet-stream'};
+const types = {'.html':'text/html', '.js':'text/javascript', '.mjs':'text/javascript',
+  '.css':'text/css', '.bin':'application/octet-stream'};
 const port = Number(process.argv[2] || 8787);
 createServer(async (req, res) => {
   try {

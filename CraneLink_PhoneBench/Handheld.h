@@ -105,9 +105,21 @@ private:
     }
     if (line == "identify") {
       uint8_t mac[6]{}, factory[6]{};
-      esp_wifi_get_mac(WIFI_IF_STA, mac);
       esp_efuse_mac_get_default(factory);
+      if (esp_wifi_get_mac(WIFI_IF_STA, mac) != ESP_OK) memcpy(mac, factory, sizeof(mac));
       Serial.printf("CL IDENT SENDER %s %s\n", formatMac(mac).c_str(), formatMac(factory).c_str());
+      return;
+    }
+    if (line == "setup-info") {
+      Serial.printf("CL TARGET %s %u %u %u\n",
+                    setup_.peer.configured() ? formatMac(setup_.peer.mac).c_str() : "-",
+                    unsigned(WiFi.channel()), unsigned(ready_ && link_.paired()), unsigned(nonce_ != 0));
+      uint8_t raw = 0;
+      for (int i = 0; i < 8; ++i) {
+        if (digitalRead(pins_[i]) == LOW) raw |= 1u << i;
+      }
+      Serial.printf("CL INPUTS %02X\n", unsigned(raw));
+      Serial.println("CL INFO DONE");
       return;
     }
     const bool assignLocal = line.startsWith("pair-as ");
@@ -137,12 +149,12 @@ private:
     const bool changeMac = assignLocal && memcmp(next.local, own, sizeof(own));
     if (!changeMac && !link_.setPeer(next.peer)) {
       link_.setPeer(setup_.peer);
-      Serial.println("Could not set the receiver.");
+      Serial.println("CL ERROR could not set receiver peer");
       return;
     }
     if (!storageReady_ || storage_.putBytes("setup-v2", &next, sizeof(next)) != sizeof(next)) {
       if (!changeMac) link_.setPeer(setup_.peer);
-      Serial.println("Could not save the receiver.");
+      Serial.println("CL ERROR could not save the receiver");
       return;
     }
     setup_ = next;

@@ -6,7 +6,7 @@
   <meta name="description" content="Install and pair a CraneLink receiver and its handheld senders over USB.">
   <title>CraneLink USB Setup</title>
   <link rel="stylesheet" href="setup.css">
-  <script type="module" src="setup.js"></script>
+  <script type="module" src="setup.js?v=2"></script>
 </head>
 <body>
   <main>
@@ -27,13 +27,25 @@
       <div class="panel">
         <h2 id="device">Receiver</h2>
         <p id="instruction"></p>
-        <p id="pairing-note">The receiver step replaces its saved sender pairings.</p>
+        <p id="pairing-note">This setup replaces the receiver’s saved sender list.</p>
         <button id="connect" type="button">Connect and upload</button>
         <button id="configure" type="button" class="secondary" hidden>Retry pairing only</button>
         <progress id="progress" max="100" value="0" hidden aria-label="Firmware upload progress"></progress>
         <p id="status" role="status"></p>
         <button id="restart" class="secondary" type="button">Start over</button>
       </div>
+    </section>
+    <section class="panel" aria-labelledby="usb-check-title">
+      <h2 id="usb-check-title">USB diagnostics</h2>
+      <p>Connect one board to see its Wi-Fi or ESP-NOW status. Power both boards during a radio check.</p>
+      <button id="inspect" type="button" class="secondary">Check connected board</button>
+      <p id="inspectStatus" role="status"></p>
+    </section>
+    <section id="report" class="panel" hidden>
+      <h2>Setup details</h2>
+      <p>Keep the Wi-Fi password and downloaded report private.</p>
+      <div class="board-details"></div>
+      <button id="downloadReport" type="button">Download PDF</button>
     </section>
     <p id="compatibility" role="alert" hidden></p>
     <details>

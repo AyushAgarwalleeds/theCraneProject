@@ -1,4 +1,6 @@
 import {ESPLoader, Transport} from './vendor/esptool.js';
+import {acknowledge, identify, readBoardInfo, withBoard} from './serial.mjs';
+import {renderReport, downloadReport} from './report.mjs';
 
 const parts = [
   ['bootloader.bin', 0x1000],
@@ -14,6 +16,9 @@ const status = get('status');
 const restart = get('restart');
 const supported = window.isSecureContext && !!navigator.serial;
 let plan, step, receiver, installed, busy;
+let checkedBoard, readingInputs = false;
+const configuredBoards = [];
+const observedBoards = new Map();
 const used = new Set();
 
 function message(text, error = false) {
@@ -48,7 +53,7 @@ function updateStep() {
   get('device').textContent = complete ? 'Setup complete' : names[step];
   get('instruction').textContent = complete
     ? 'Disconnect USB, power the receiver and senders, and test each handheld on the bench.'
-    : 'Connect only the ' + names[step].toLowerCase() + ' with a USB data cable. Select its port when asked.';
+    : 'Connect the ' + names[step].toLowerCase() + ' with a USB data cable. Select its port when asked.';
   connect.hidden = complete;
   get('pairing-note').hidden = step !== 0;
   configure.hidden = complete || !installed;
@@ -62,6 +67,10 @@ function start(count) {
   receiver = null;
   installed = busy = false;
   used.clear();
+  configuredBoards.length = 0;
+  observedBoards.clear();
+  checkedBoard = undefined;
+  refreshReport();
   get('plan').hidden = true;
   get('setup').hidden = false;
   message('');
@@ -70,7 +79,7 @@ function start(count) {
 
 async function readFirmware(role) {
   return Promise.all(parts.map(async ([name, address]) => {
-    const response = await fetch('./firmware/' + role + '/' + name);
+    const response = await fetch('./firmware/' + role + '/' + name, {cache:'no-store'});
     if (!response.ok) throw Error('Firmware file unavailable: ' + name);
     const data = new Uint8Array(await response.arrayBuffer());
     if (!data.length || (name === 'app.bin' && data[0] !== 0xe9))
@@ -108,94 +117,51 @@ async function flash(port, role) {
   }
 }
 
-async function serialSetup(port, role, factory) {
-  await port.open({baudRate:115200});
-  const reader = port.readable.getReader();
-  const writer = port.writable.getWriter();
-  const encoder = new TextEncoder();
-  const decoder = new TextDecoder();
-  let lines = '';
-  let ready = false;
-  let senderSaved = false;
-  let verifiedSlots = 0;
-  let settle;
-  const wait = new Promise((resolve, reject) => { settle = {resolve,reject}; });
-  const timer = setTimeout(() => settle.reject(Error('The board did not confirm setup. Tap EN, then retry pairing.')), 12000);
-  const probe = setInterval(() => {
-    if (!ready || senderSaved) void writer.write(encoder.encode('identify\n')).catch(err => settle.reject(err));
-  }, 450);
-  const readLoop = (async () => {
-    try {
-      for (;;) {
-        const {value, done} = await reader.read();
-        if (done) throw Error('USB disconnected before setup was confirmed.');
-        lines += decoder.decode(value, {stream:true});
-        let end;
-        while ((end = lines.indexOf('\n')) >= 0) {
-          const line = lines.slice(0, end).trim();
-          lines = lines.slice(end + 1);
-          if (line.startsWith('CL IDENT ') && (!ready || role === 'sender')) {
-            const [, , actualRole, mac, board] = line.split(' ');
-            if (actualRole !== role.toUpperCase() || (factory && board !== factory) || used.has(board))
-              throw Error('The connected board does not match this setup step.');
-            if (!ready) {
-              ready = true;
-              factory = board;
-              if (role === 'receiver') {
-                receiver = mac;
-                await writer.write(encoder.encode('clear-peers\n'));
-              } else {
-                const sender = plan[step - 1];
-                await writer.write(encoder.encode('pair-as ' + receiver + ' ' + sender.key + ' ' + sender.mac + '\n'));
-              }
-            }
-          } else if (line.startsWith('CL ERROR')) {
-            throw Error('The board rejected pairing. Check that all controls are released.');
-          } else if (role === 'receiver' && (line === 'CL CLEARED' ||
-                     line === 'CL PEER ' + (verifiedSlots + 1))) {
-            if (line !== 'CL CLEARED') ++verifiedSlots;
-            if (verifiedSlots === plan.length) settle.resolve(factory);
-            else {
-              const sender = plan[verifiedSlots];
-              await writer.write(encoder.encode('peer ' + (verifiedSlots + 1) + ' ' + sender.mac + ' ' + sender.key + '\n'));
-            }
-          }
-          if (role === 'sender' && ready && /^CL IDENT SENDER /.test(line) &&
-              line.split(' ')[3] === plan[step - 1].mac && senderSaved) settle.resolve(factory);
-          if (line === 'CL PAIRED') senderSaved = true;
-        }
-        if (lines.length > 4096) lines = '';
-      }
-    } catch (error) { settle.reject(error); }
-  })();
-  try { return await wait; }
-  finally {
-    clearInterval(probe);
-    clearTimeout(timer);
-    await reader.cancel().catch(() => {});
-    await readLoop;
-    reader.releaseLock();
-    writer.releaseLock();
-    await port.close();
-  }
+function serialSetup(port, role, factory) {
+  return withBoard(port, async command => {
+    const board = await identify(command, role, factory);
+    if (used.has(board.factory)) throw Error('This board was already assigned. Connect the next board.');
+    if (role === 'receiver') {
+      await acknowledge(command, 'peers-begin ' + plan.length, 'CL PEERS READY');
+      for (const sender of plan)
+        await acknowledge(command, 'peers-add ' + sender.mac + ' ' + sender.key, 'CL PEERS ADDED');
+      await acknowledge(command, 'peers-save', 'CL PEERS SAVED');
+      const info = await readBoardInfo(command, board);
+      if (!info.ssid || !info.ready || !plan.every((sender, i) =>
+        info.slots.some(slot => slot.slot === i + 1 && slot.mac === sender.mac)))
+        throw Error('Receiver settings could not be confirmed. Retry pairing on this board.');
+      receiver = board.mac;
+      return info;
+    }
+    const sender = plan[step - 1];
+    await acknowledge(command, 'pair-as ' + receiver + ' ' + sender.key + ' ' + sender.mac, 'CL PAIRED');
+    await new Promise(resolve => setTimeout(resolve, 500));
+    const verified = await identify(command, role, board.factory);
+    const info = await readBoardInfo(command, verified);
+    if (!info.ready || info.mac !== sender.mac || info.target !== receiver)
+      throw Error('Sender identity or radio setup could not be confirmed. Retry pairing on this board.');
+    return {...info, slot:step};
+  });
 }
 
 async function run(upload) {
-  if (busy) return;
+  if (busy || readingInputs) return;
   busy = true;
   updateStep();
-  let port;
   const role = step === 0 ? 'receiver' : 'sender';
   try {
-    port = await navigator.serial.requestPort();
+    const port = await navigator.serial.requestPort();
     const factory = upload ? await flash(port, role) : installed;
     installed = factory || true;
     message('Saving pairing on the ' + role + '…');
     const board = await serialSetup(port, role, typeof factory === 'string' ? factory : undefined);
-    used.add(board);
+    used.add(board.factory);
+    observedBoards.delete(board.factory);
+    configuredBoards.push(board);
+    refreshReport();
     ++step;
     installed = false;
-    message('Pairing saved on the ' + role + '.');
+    message('Pairing saved on the ' + role + '. Power both boards for the radio check.');
   } catch (error) {
     message(error.name === 'NotFoundError' ? 'No port selected. Try again when connected.' : error.message, true);
   } finally {
@@ -203,6 +169,55 @@ async function run(upload) {
     updateStep();
   }
 }
+
+function reportBoards() {
+  const boards = new Map(configuredBoards.map(board => [board.factory, board]));
+  for (const [factory, info] of observedBoards)
+    boards.set(factory, {...boards.get(factory), ...info});
+  return [...boards.values()];
+}
+
+function refreshReport() {
+  renderReport(get('report'), reportBoards(), checkedBoard);
+}
+
+get('inspect').addEventListener('click', async () => {
+  if (busy) return;
+  if (readingInputs) {
+    readingInputs = false;
+    return;
+  }
+  readingInputs = true;
+  const button = get('inspect');
+  const note = get('inspectStatus');
+  note.textContent = 'Select the USB port of the board to check.';
+  try {
+    const port = await navigator.serial.requestPort();
+    await withBoard(port, async command => {
+      const board = await identify(command);
+      button.textContent = 'Stop USB check';
+      while (readingInputs) {
+        checkedBoard = await readBoardInfo(command, board);
+        observedBoards.set(board.factory, checkedBoard);
+        note.textContent = board.role === 'sender'
+          ? 'Hold a button or briefly close its GPIO to GND and watch the input display.'
+          : 'Receiver status refreshes while this check is open.';
+        refreshReport();
+        await new Promise(resolve => setTimeout(resolve, 250));
+      }
+    });
+  } catch (error) {
+    note.textContent = error.name === 'NotFoundError' ? 'No port selected.' : error.message;
+  } finally {
+    readingInputs = false;
+    button.textContent = 'Check connected board';
+  }
+});
+get('downloadReport').addEventListener('click', async () => {
+  await downloadReport(reportBoards(), checkedBoard).catch(() => {
+    get('inspectStatus').textContent = 'Could not create the PDF. Reload the page and try again.';
+  });
+});
 
 get('plan').addEventListener('submit', event => {
   event.preventDefault();
@@ -216,6 +231,7 @@ restart.addEventListener('click', () => {
   get('plan').hidden = false;
 });
 if (!supported) {
+  get('inspect').disabled = true;
   get('plan').querySelector('button').disabled = true;
   const alert = get('compatibility');
   alert.hidden = false;

@@ -13,6 +13,10 @@ Open [CraneLink USB Setup](https://ayushagarwalleeds.github.io/theCraneProject/)
 
 The wizard supports classic ESP32-WROOM with 4 MB or more flash. It does not use Arduino IDE during installation. Pairing keys are generated in the browser and saved on the boards over USB.
 
+The installer shows the receiver's Wi-Fi name, password, and phone controls address after USB setup. **Download PDF** saves the board addresses and receiver Wi-Fi details on your computer. Keep the report private.
+
+Use **USB diagnostics → Check connected board** to check the boards after flashing. Power both boards while checking ESP-NOW. For the sender, the display shows the paired receiver address, whether it hears the receiver, and which inputs are low. For the receiver, it shows Wi-Fi and sender status, uptime and the last reset reason. A low input should appear only while you hold its button. If the receiver's Wi-Fi disappears and its uptime repeatedly resets, check power and read the last reset reason with the relay module disconnected.
+
 ## Flash the receiver manually
 
 1. Open `CraneLink_PhoneBench.ino` from this folder in Arduino IDE. Select **Tools → Board → esp32 → ESP32 Dev Module** with the Espressif Arduino 3.x core. Set `CRANELINK_SENDER` to `0` in **BuildRole.h**, then upload to the receiver.
