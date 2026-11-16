@@ -37,6 +37,13 @@ function reportSections(installed, checked) {
       rows.push(['Paired receiver MAC', board.target === '-' ? 'Unpaired' : board.target]);
       rows.push(['Radio link when read', !board.ready ? 'Unavailable or unpaired' :
         board.linked ? 'Receiver heard' : 'Waiting for receiver']);
+      for (const target of board.targets ?? []) {
+        const name = target.name === '-' ? target.mac : target.name;
+        rows.push(['Receiver ' + target.slot, name + (target.selected ? ' (selected)' : '')]);
+      }
+      if (board.battery) rows.push(['Battery voltage', !board.battery.enabled ? 'Monitoring off' :
+        board.battery.millivolts ? (board.battery.millivolts / 1000).toFixed(2) + ' V' +
+          (board.battery.low ? ' (low)' : '') : 'Waiting for valid pack voltage']);
       if (board.factory === checked?.factory && Number.isInteger(board.inputs))
         rows.push(['Closed inputs', inputs.filter((_, i) => board.inputs & (1 << i))
           .map(([label, pin]) => label + ' (GPIO' + pin + ')').join(', ') || 'All released']);

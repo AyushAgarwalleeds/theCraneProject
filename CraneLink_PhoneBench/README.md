@@ -4,7 +4,7 @@ This sketch builds two roles for classic ESP32-WROOM boards. The receiver operat
 
 ## USB setup website
 
-Open [CraneLink USB Setup](https://ayushagarwalleeds.github.io/theCraneProject/) in desktop Chrome or Edge. If you have a local copy of the repository, run `node tools/serve-wizard.mjs` from its root and open the printed localhost address. A USB data cable is required. Close Arduino Serial Monitor before using the site.
+Open [CraneLink USB Setup](https://thecraneproject.vercel.app/) in desktop Chrome or Edge, or Android Chrome on a phone with USB host support. Use a data cable plugged into the ESP32 development board. Some phones require a USB OTG adapter. Keep Chrome in the foreground during upload. The Android path supports common CP210x, CH340/CH341 and FTDI bridges through WebUSB. Use desktop Chrome or Edge for USB setup if your phone cannot see the board or you use an iPhone or iPad. If you have a local copy of the repository, run `node tools/serve-wizard.mjs` from its root and open the printed localhost address. Close Arduino Serial Monitor before using the site. [ESPHome USB bridge support](https://github.com/esphome/esp-web-tools/pull/750)
 
 1. Choose how many senders to install, from one to four, and click **Start setup**.
 2. Connect the receiver by USB. Click **Connect and upload**, then pick its COM port in the browser. The receiver gets the relay firmware and a new set of sender pairings. Existing sender pairings are replaced.
@@ -14,6 +14,35 @@ Open [CraneLink USB Setup](https://ayushagarwalleeds.github.io/theCraneProject/)
 The wizard supports classic ESP32-WROOM with 4 MB or more flash. It does not use Arduino IDE during installation. Pairing keys are generated in the browser and saved on the boards over USB.
 
 The installer shows the receiver's Wi-Fi name, password, and phone controls address after USB setup. **Download PDF** saves the board addresses and receiver Wi-Fi details on your computer. Keep the report private.
+
+## Master sender
+
+1. Open **Master sender** and choose two to four receivers. Connect the handheld by USB and click **Read sender over USB**. If prompted, use **Upload sender firmware** for this board.
+2. Unplug the handheld. Connect one configured receiver at a time and click **Add connected receiver**. Connect them in the order you want to select them. Each receiver needs one free sender slot or a slot for the same handheld. The wizard renews the key if the handheld is already saved there and keeps the other sender slots.
+3. Reconnect the same handheld and click **Save to master sender**. Its new list replaces its previous receiver list. Complete the wizard in the same tab. The website shows the final order using the receivers’ Wi-Fi names, and USB diagnostics shows the currently selected receiver.
+4. Power the handheld and receivers. The handheld starts on receiver 1. With all other buttons released, tap **Power** for less than 0.3 seconds, then press it again within 0.6 seconds and hold it for two seconds. Release it. Count the flashes on the status LED to identify the new receiver. Wait for solid light, then give a fresh command. The sequence cycles back to receiver 1 after the last receiver.
+
+The handheld sends a release to the previous receiver and waits one second before changing its target. The handset does not advance automatically if the selected receiver is out of range. A regular three-second hold of **Power** still toggles Power, and **Power + Emergency Stop** still resets a latched stop after release. Emergency Stop from the handheld addresses the selected receiver. Label each bench with its Wi-Fi name and check the selected receiver before pressing a direction.
+
+## Handheld LED, buzzer and battery
+
+| Function | Sender pin | Connection |
+| --- | --- | --- |
+| Status LED | GPIO23 | GPIO → 330 Ω to 1 kΩ resistor → LED anode. LED cathode → GND. |
+| Sound | GPIO18 | Use a small passive piezo rated for 3.3 V drive. For a powered buzzer or magnetic speaker, use a driver and its rated supply. |
+| Pack voltage | GPIO34 | Protected pack OUT+ → 10 kΩ → GPIO34 → 10 kΩ → OUT− / ESP32 GND. Use the pack side of the regulator. A 100 nF capacitor from GPIO34 to GND helps filter noise. |
+
+| Indication | LED | Buzzer |
+| --- | --- | --- |
+| Receiver selected | One to four flashes, matching the configured order | Link tone follows when heard |
+| Searching | Short flash about once a second | Periodic search tone |
+| Receiver heard | Solid | One short beep on connection |
+| Link lost | Rapid flash | Two short beeps on loss |
+| Low battery | A burst of rapid flashes over the link pattern | Three beeps every 30 seconds |
+
+After wiring the divider, connect the sender by USB and enable **USB diagnostics → Sender battery monitoring**. Check the reported voltage against a multimeter. The warning starts at approximately 3.50 V under load and clears above about 3.65 V. A sender powered only by USB can show that it is waiting for valid pack voltage.
+
+The pictured USB-C board appears to be a TP4056-type 1S charger with protected OUT terminals. Confirm the markings on your board and use it only with a matched 1S parallel pack rated for 4.2 V charging. Use the protected OUT+ and OUT− for the load and switch the sender off while charging. The charger output follows the pack voltage. Use an existing regulated 5 V boost module only if it is specified for the pack’s full operating range, including below 3.5 V, and supplies enough current for your ESP32 board. The second pictured module resembles an XL6009 board. If its chip is marked XL6009, its specified input starts at 5 V, so it is unsuitable for this pack. Check the regulator output with a meter before connecting it to the ESP32. Use one ESP32 power source at a time. [TP4056 datasheet](https://www.toppwr.com/uploadfile/file/20240130/65b892bb04a3c.pdf) · [XL6009 datasheet](https://www.mantech.co.za/Datasheets/Products/xl6009.pdf) · [Espressif DevKitC power inputs](https://docs.espressif.com/projects/esp-dev-kits/en/latest/esp32/esp32-devkitc/user_guide.html)
 
 The default Wi-Fi name is a 10-character code derived from the receiver’s MAC. To use a name such as `MH14AB4292`, open **Receiver Wi-Fi** in the installer, connect the receiver by USB, and disconnect the phone from receiver Wi-Fi. Enter a name and password, then click **Apply over USB**. The receiver restarts with the new Wi-Fi settings. Give each receiver a different name if you choose your own. Use a freshly generated password of 8–63 printable characters without spaces.
 

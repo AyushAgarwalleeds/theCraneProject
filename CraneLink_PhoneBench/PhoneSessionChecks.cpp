@@ -1,6 +1,7 @@
 #include "PhoneSession.h"
 #include "AuxLatch.h"
 #include "StopResetGesture.h"
+#include "ReceiverSelectGesture.h"
 
 namespace {
 constexpr bool ownerAndExpiry() {
@@ -101,4 +102,26 @@ constexpr bool resetRequiresNeutralAndRelease() {
 }
 
 static_assert(resetRequiresNeutralAndRelease(), "Reset requires a new hold and release after reconnect.");
+
+constexpr bool powerAndSelectionAreDistinct() {
+  using Gesture = ReceiverSelectGesture;
+  Gesture gesture;
+  if (gesture.update(64, 100) != Gesture::normal ||
+      gesture.update(64, 3300) != Gesture::normal ||
+      gesture.update(0, 3400) != Gesture::normal) return false;
+  if (gesture.update(64, 4000) != Gesture::normal ||
+      gesture.update(0, 4090) != Gesture::normal ||
+      gesture.update(64, 4250) != Gesture::suppressPower ||
+      gesture.update(64, 6249) != Gesture::suppressPower ||
+      gesture.update(64, 6250) != Gesture::selectNext ||
+      gesture.update(64, 9300) != Gesture::suppressPower) return false;
+  gesture.update(0, 9500);
+  gesture.update(64, 9600);
+  gesture.update(0, 9700);
+  gesture.update(64, 9890);
+  gesture.update(192, 10000);
+  return gesture.update(64, 13000) == Gesture::suppressPower;
+}
+
+static_assert(powerAndSelectionAreDistinct(), "A normal Power hold stays available and Stop cancels selection.");
 }

@@ -5,8 +5,8 @@
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <meta name="description" content="Install and pair a CraneLink receiver and its handheld senders over USB.">
   <title>CraneLink USB Setup</title>
-  <link rel="stylesheet" href="setup.css?v=4">
-  <script type="module" src="setup.js?v=4"></script>
+  <link rel="stylesheet" href="setup.css?v=5">
+  <script type="module" src="setup.js?v=5"></script>
 </head>
 <body>
   <main>
@@ -16,7 +16,7 @@
     </header>
     <h1>CraneLink setup</h1>
     <p class="intro">Pair a receiver with its handhelds, set the receiver’s Wi-Fi, or check a board over USB.</p>
-    <p class="notice">Use desktop Chrome or Edge and a USB data cable. Keep the relay contacts disconnected from the crane.</p>
+    <p class="notice">Use a USB data cable with desktop Chrome or Edge, or Android Chrome with USB host support. Keep the relay contacts disconnected from the crane.</p>
     <div class="overview">
       <form id="plan" class="panel">
         <h2>Install and pair</h2>
@@ -24,6 +24,13 @@
         <label for="count">Number of handhelds</label>
         <select id="count"><option selected>1</option><option>2</option><option>3</option><option>4</option></select>
         <button type="submit">Start setup</button>
+      </form>
+      <form id="masterPlan" class="panel">
+        <h2>Master sender</h2>
+        <p>Pair one handheld with up to four configured receivers. Connect them in the order you want to cycle through them.</p>
+        <label for="receiverCount">Number of receivers</label>
+        <select id="receiverCount"><option selected>2</option><option>3</option><option>4</option></select>
+        <button type="submit">Set up master sender</button>
       </form>
       <section class="panel" aria-labelledby="wifi-title">
         <h2 id="wifi-title">Receiver Wi-Fi</h2>
@@ -38,6 +45,18 @@
         <p id="networkStatus" role="status"></p>
       </section>
     </div>
+    <section id="master" class="panel" hidden>
+      <h2 id="masterTitle">Master sender setup</h2>
+      <p id="masterInstruction"></p>
+      <ol id="masterReceivers" aria-label="Receiver selection order"></ol>
+      <div>
+        <button id="masterConnect" type="button">Read sender over USB</button>
+        <button id="masterUpload" type="button" class="secondary">Upload sender firmware</button>
+        <button id="masterCancel" type="button" class="secondary">Close master setup</button>
+      </div>
+      <progress id="masterProgress" max="100" value="0" hidden aria-label="Sender firmware upload progress"></progress>
+      <p id="masterStatus" role="status"></p>
+    </section>
     <section id="setup" hidden>
       <ol id="devices" aria-label="Setup progress"></ol>
       <div class="panel">
@@ -56,6 +75,16 @@
       <p>Connect one board to see its Wi-Fi or ESP-NOW status. Power both boards during a radio check.</p>
       <button id="inspect" type="button" class="secondary">Check connected board</button>
       <p id="inspectStatus" role="status"></p>
+      <details>
+        <summary>Sender battery monitoring</summary>
+        <p>Connect the GPIO34 voltage divider before enabling. Check the battery reading against a multimeter.</p>
+        <form id="batteryConfig">
+          <label for="batteryMode">Battery monitor</label>
+          <select id="batteryMode"><option value="1">On</option><option value="0">Off</option></select>
+          <button type="submit" class="secondary">Save on sender over USB</button>
+        </form>
+        <p id="batteryStatus" role="status"></p>
+      </details>
     </section>
     <section id="report" class="panel" hidden>
       <h2>Setup details</h2>
@@ -69,6 +98,7 @@
       <ul>
         <li>Power both boards with the phone disconnected from receiver Wi-Fi. Release every handheld button, then press a direction.</li>
         <li>Hold Power On/Off for three seconds and release. Repeat to turn Power off.</li>
+        <li>On a master sender, tap Power, then immediately press and hold it for two seconds. Release it and count the LED flashes for the new receiver number.</li>
         <li>After a stop, release all buttons. Hold Power and Emergency Stop together for three seconds, then release both. Press a direction again to test.</li>
         <li>For phone control, join the receiver’s Wi-Fi and open <a href="http://192.168.4.1/">192.168.4.1</a>. Disconnect from that Wi-Fi to hand control back to the handheld.</li>
       </ul>
@@ -77,6 +107,7 @@
       <summary>USB troubleshooting</summary>
       <ul>
         <li>Close Arduino Serial Monitor and any other app using the COM port.</li>
+        <li>On Android, use a USB data cable or OTG adapter. Keep Chrome open while uploading. iPhone and iPad require a desktop browser for USB setup.</li>
         <li>If the board cannot enter upload mode, hold BOOT, tap EN, then release BOOT and retry.</li>
         <li>Use a classic ESP32-WROOM development board with at least 4 MB flash. ESP32-S3, C3 and other chips require different firmware.</li>
         <li>Keep this tab open until setup finishes. If an upload succeeded but pairing failed, connect the same board and choose Retry pairing only.</li>

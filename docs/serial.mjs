@@ -82,6 +82,15 @@ export async function withBoard(port, work, {restart = false} = {}) {
 const mac = '([0-9a-f]{2}(?::[0-9a-f]{2}){5})';
 const identityPattern = new RegExp('^CL IDENT (RECEIVER|SENDER) ' + mac + ' ' + mac + '$', 'i');
 
+export async function probeRole(command) {
+  try {
+    return await command('identify', line => identityPattern.exec(line)?.[1]?.toLowerCase(), 900);
+  } catch (error) {
+    if (!(error instanceof SerialReplyTimeout)) throw error;
+    return undefined;
+  }
+}
+
 export async function identify(command, role, factory) {
   let sawOutput = false;
   let bootloader = false;
@@ -127,8 +136,18 @@ export async function readBoardInfo(command, identity) {
       result.channel = Number(fields[0]);
       result.ready = fields[1] === '1';
     }
-    if (kind === 'FEATURES') result.networkEditable = fields.includes('NETWORK');
+    if (kind === 'FEATURES') {
+      result.networkEditable = fields.includes('NETWORK');
+      result.masterEditable = fields.includes('MASTER');
+      result.batteryEditable = fields.includes('BATTERY');
+    }
     if (kind === 'PROTOCOL') result.protocol = Number(fields[0]);
+    if (kind === 'PICK') {
+      result.targets ??= [];
+      result.targets.push({slot:Number(fields[0]), mac:fields[1], name:fields[2], selected:fields[3] === '1'});
+    }
+    if (kind === 'BATTERY')
+      result.battery = {enabled:fields[0] === '1', millivolts:Number(fields[1]), low:fields[2] === '1'};
     if (kind === 'STATE') {
       result.stopped = fields[0] === '1';
       result.phoneOwns = fields[1] === '1';

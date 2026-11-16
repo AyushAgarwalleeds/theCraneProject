@@ -1,6 +1,8 @@
 import assert from 'node:assert/strict';
+import {readFileSync} from 'node:fs';
 import test from 'node:test';
-import {FirmwareUpdateRequired, identify, readBoardInfo, withBoard} from '../docs/serial.mjs';
+import {createContext, runInContext} from 'node:vm';
+import {acknowledge, FirmwareUpdateRequired, identify, readBoardInfo, withBoard} from '../docs/serial.mjs';
 import {buildReport} from '../docs/report.mjs';
 import {PDFDocument} from '../docs/vendor/pdf-lib.mjs';
 
@@ -49,6 +51,67 @@ test('USB diagnostics distinguish a saved peer from a live link and report groun
   assert.equal(info.ready, true);
   assert.equal(info.linked, false);
   assert.equal(info.inputs, 0x81);
+});
+
+test('master setup keeps existing sender slots and saves distinct keys in receiver order', async () => {
+  const senderMac = '02:00:00:00:00:01';
+  const saved = new Map();
+  let pending = [], targets = [];
+  const sender = usbDevice(line => {
+    if (line === 'identify') return [`CL IDENT SENDER ${senderMac} ${senderMac}\n`];
+    if (line === 'targets-begin 2') { pending = []; return ['CL TARGETS READY\n']; }
+    if (line.startsWith('targets-add ')) {
+      pending.push(line.split(' ').slice(1));
+      return ['CL TARGET ADDED\n'];
+    }
+    if (line === 'targets-save') { targets = pending; return ['CL TARGETS SAVED\n']; }
+    return ['CL PROTOCOL 4\nCL FEATURES MASTER BATTERY\nCL BATTERY 1 3480 1\n',
+      ...targets.map(([mac, , name], i) => `CL PICK ${i + 1} ${mac} ${name} ${Number(!i)}\n`),
+      `CL TARGET ${targets[0]?.[0] ?? '-'} 6 ${Number(!!targets.length)} 0\nCL INFO DONE\n`];
+  });
+  const receiver = (mac, name) => usbDevice(line => {
+    if (line === 'identify') return [`CL IDENT RECEIVER ${mac} ${mac}\n`];
+    if (line.startsWith('peer ')) {
+      const [, slot, sender, key] = line.split(' ');
+      assert.equal(slot, '2');
+      assert.equal(sender, senderMac);
+      saved.set(mac, key);
+      return ['CL PEER 2\n'];
+    }
+    return [`CL PROTOCOL 4\nCL RADIO 6 1\nCL WIFI ${name} examplepass 192.168.4.1\n`,
+      'CL SLOT 1 02:00:00:00:00:FF 1\n',
+      saved.has(mac) ? `CL SLOT 2 ${senderMac} 0\n` : '', 'CL INFO DONE\n'];
+  });
+  const first = receiver('10:06:1C:00:00:01', 'MH14AB4292');
+  const second = receiver('10:06:1C:00:00:02', 'MH14AB4293');
+  const ports = [sender, first, first, second, sender];
+  const elements = new Map();
+  function element(id) {
+    if (!elements.has(id)) elements.set(id, {value:'2', events:{}, classList:{toggle() {}},
+      addEventListener(name, fn) { this.events[name] = fn; }, replaceChildren() {}, setAttribute() {}});
+    return elements.get(id);
+  }
+  const reports = [];
+  const ctx = createContext({acknowledge, FirmwareUpdateRequired, identify, readBoardInfo, withBoard,
+    document:{getElementById:element, createElement:() => ({setAttribute() {}})},
+    crypto, supported:true, requestPort:async () => ports.shift(),
+    renderReport:(_, boards) => reports.push(boards)});
+  const script = readFileSync(new URL('../docs/setup.js', import.meta.url), 'utf8').replace(/^import .*;\r?\n/gm, '');
+  runInContext(script, ctx);
+  element('masterPlan').events.submit({preventDefault() {}});
+  for (let i = 0; i < 3; ++i) await runInContext('runMaster()', ctx);
+  assert.match(element('masterStatus').textContent, /already in the list/);
+  assert.equal(saved.size, 1);
+  for (let i = 0; i < 2; ++i) await runInContext('runMaster()', ctx);
+  assert.match(element('masterStatus').textContent, /saved and verified/);
+  assert.notEqual(...saved.values());
+  assert.deepEqual(targets.map(([mac, key, name]) => [key, name]), [
+    [saved.get('10:06:1C:00:00:01'), 'MH14AB4292'],
+    [saved.get('10:06:1C:00:00:02'), 'MH14AB4293'],
+  ]);
+  const installed = reports.at(-1).find(board => board.role === 'sender');
+  assert.equal(installed.targets[0].selected, true);
+  assert.deepEqual(installed.battery, {enabled:true, millivolts:3480, low:true});
 });
 
 test('USB diagnostics identify older firmware on both board roles', async () => {

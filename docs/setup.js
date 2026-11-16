@@ -1,6 +1,7 @@
 import {ESPLoader, Transport} from './vendor/esptool.js';
-import {acknowledge, FirmwareUpdateRequired, identify, readBoardInfo, withBoard} from './serial.mjs?v=4';
-import {renderReport, downloadReport} from './report.mjs?v=4';
+import {acknowledge, FirmwareUpdateRequired, identify, probeRole, readBoardInfo, withBoard} from './serial.mjs?v=5';
+import {renderReport, downloadReport} from './report.mjs?v=5';
+import {requestPort, supported, useAndroidUsb} from './usb.mjs?v=5';
 
 const parts = [
   ['bootloader.bin', 0x1000],
@@ -9,6 +10,7 @@ const parts = [
   ['app.bin', 0x10000],
 ];
 const radioProtocol = 4;
+const firmwareRelease = 5;
 const get = id => document.getElementById(id);
 const connect = get('connect');
 const configure = get('configure');
@@ -16,8 +18,8 @@ const progress = get('progress');
 const status = get('status');
 const restart = get('restart');
 const saveNetwork = get('saveNetwork');
-const supported = window.isSecureContext && !!navigator.serial;
 let plan, step, receiver, installed, busy;
+let master;
 let checkedBoard, readingInputs = false, stopInspection = false;
 const configuredBoards = [];
 const observedBoards = new Map();
@@ -82,7 +84,7 @@ function start(count) {
 
 async function readFirmware(role) {
   return Promise.all(parts.map(async ([name, address]) => {
-    const response = await fetch('./firmware/' + role + '/' + name + '?v=' + radioProtocol, {cache:'no-store'});
+    const response = await fetch('./firmware/' + role + '/' + name + '?v=' + firmwareRelease, {cache:'no-store'});
     if (!response.ok) throw Error('Firmware file unavailable: ' + name);
     const data = new Uint8Array(await response.arrayBuffer());
     if (!data.length || (name === 'app.bin' && data[0] !== 0xe9))
@@ -91,31 +93,37 @@ async function readFirmware(role) {
   }));
 }
 
-async function flash(port, role) {
+async function flash(port, role, options = {}) {
+  const {progressBar = progress, reportStatus = message, exclude = used} = options;
   const fileArray = await readFirmware(role);
   const transport = new Transport(port, false);
-  const loader = new ESPLoader({transport, baudrate:460800, romBaudrate:115200});
+  const loader = new ESPLoader({transport, baudrate:useAndroidUsb ? 115200 : 460800, romBaudrate:115200});
+  const wakeLock = useAndroidUsb ? await navigator.wakeLock?.request('screen').catch(() => null) : null;
   try {
-    message('Identifying ESP32…');
+    reportStatus('Identifying ESP32…');
     const chip = await loader.main();
     if (loader.chip.CHIP_NAME !== 'ESP32') throw Error('Unsupported chip: ' + chip + '. Use ESP32-WROOM.');
     const size = await loader.detectFlashSize();
     if (!['4MB', '8MB', '16MB', '32MB', '64MB', '128MB'].includes(size))
       throw Error('Use an ESP32-WROOM with at least 4 MB flash. Detected: ' + (size || 'unknown'));
     const factory = (await loader.chip.readMac(loader)).toUpperCase();
-    if (used.has(factory)) throw Error('This board is already assigned. Unplug it and select the next board.');
-    progress.hidden = false;
-    progress.value = 0;
+    if (exclude?.has(factory)) throw Error('This board is already assigned. Unplug it and select the next board.');
+    progressBar.hidden = false;
+    progressBar.value = 0;
     await loader.writeFlash({
       fileArray, flashMode:'keep', flashFreq:'keep', flashSize:'keep', eraseAll:false, compress:true,
       reportProgress(index, done, total) {
-        progress.value = ((index + done / total) / fileArray.length) * 100;
-        message('Uploading ' + role + ' firmware… ' + Math.floor(progress.value) + '%');
+        progressBar.value = ((index + done / total) / fileArray.length) * 100;
+        reportStatus('Uploading ' + role + ' firmware… ' + Math.floor(progressBar.value) + '%');
       },
     });
     return factory;
   } finally {
-    if (port.readable || port.writable) await transport.disconnect();
+    try {
+      if (port.readable || port.writable) await transport.disconnect();
+    } finally {
+      await wakeLock?.release().catch(() => {});
+    }
   }
 }
 
@@ -126,6 +134,7 @@ function serialSetup(port, role, factory, restart) {
     // Check the firmware before writing any new pairing settings.
     const before = await readBoardInfo(command, board);
     if (before.protocol !== radioProtocol) throw new FirmwareUpdateRequired();
+    if (role === 'sender' && !before.masterEditable) throw new FirmwareUpdateRequired();
     if (role === 'receiver') {
       await acknowledge(command, 'peers-begin ' + plan.length, 'CL PEERS READY');
       for (const sender of plan)
@@ -155,7 +164,7 @@ async function run(upload) {
   updateStep();
   const role = step === 0 ? 'receiver' : 'sender';
   try {
-    const port = await navigator.serial.requestPort();
+    const port = await requestPort();
     const factory = upload ? await flash(port, role) : installed;
     installed = factory || true;
     message('Saving pairing on the ' + role + '…');
@@ -199,7 +208,7 @@ get('inspect').addEventListener('click', async () => {
   const note = get('inspectStatus');
   note.textContent = 'Select the USB port of the board to check.';
   try {
-    const port = await navigator.serial.requestPort();
+    const port = await requestPort();
     await withBoard(port, async command => {
       const board = await identify(command);
       button.textContent = 'Stop USB check';
@@ -233,7 +242,7 @@ get('network').addEventListener('submit', async event => {
   busy = saveNetwork.disabled = true;
   status.textContent = 'Select the receiver’s USB port.';
   try {
-    const port = await navigator.serial.requestPort();
+    const port = await requestPort();
     const factory = await withBoard(port, async command => {
       const identity = await identify(command, 'receiver');
       const info = await readBoardInfo(command, identity);
@@ -258,6 +267,164 @@ get('network').addEventListener('submit', async event => {
     busy = saveNetwork.disabled = false;
   }
 });
+
+function masterMessage(text, error = false) {
+  const status = get('masterStatus');
+  status.textContent = text;
+  status.classList.toggle('error', error);
+}
+
+function showMasterStep() {
+  const next = master.targets.length;
+  const connect = get('masterConnect');
+  get('masterTitle').textContent = master.done ? 'Master sender ready' : 'Master sender setup';
+  get('masterInstruction').textContent = master.done
+    ? 'Power the boards on the bench. Confirm the LED identifies the intended receiver before trying a direction.'
+    : !master.sender ? 'Connect the handheld you want to use as the master. If it has older firmware, upload the sender firmware here.'
+    : next < master.count ? 'Unplug the sender and connect receiver ' + (next + 1) + '. This uses one sender slot on that receiver.'
+    : 'Reconnect the same master sender to save the receiver list. Saving replaces that sender’s previous receiver list.';
+  connect.textContent = !master.sender ? 'Read sender over USB' : next < master.count ? 'Add connected receiver' : 'Save to master sender';
+  connect.hidden = master.done;
+  get('masterUpload').hidden = !!master.sender;
+  get('masterProgress').hidden = true;
+  get('masterReceivers').replaceChildren(...Array.from({length:master.count}, (_, i) => {
+    const item = document.createElement('li');
+    item.textContent = (i + 1) + ' · ' + (master.targets[i]?.name ?? 'Receiver');
+    if (i === next && master.sender) item.setAttribute('aria-current', 'step');
+    return item;
+  }));
+}
+
+get('masterPlan').addEventListener('submit', event => {
+  event.preventDefault();
+  if (busy || readingInputs) return;
+  master ??= {count:Number(get('receiverCount').value), targets:[], pending:new Map()};
+  get('masterPlan').hidden = true;
+  get('master').hidden = false;
+  masterMessage('');
+  showMasterStep();
+});
+
+get('masterCancel').addEventListener('click', () => {
+  if (busy) return;
+  if (!master.targets.length || master.done) master = undefined;
+  get('receiverCount').disabled = !!master;
+  get('masterPlan').querySelector('button').textContent = master ? 'Resume master setup' : 'Set up master sender';
+  get('master').hidden = true;
+  get('masterPlan').hidden = false;
+});
+
+async function configureMaster(port, upload) {
+  if (!master.sender) {
+    if (upload && await withBoard(port, probeRole) === 'receiver')
+      throw Error('This board identifies as a receiver. Connect your handheld to upload sender firmware.');
+    const factory = upload ? await flash(port, 'sender', {
+      progressBar:get('masterProgress'), reportStatus:masterMessage, exclude:null
+    }) : undefined;
+    const sender = await withBoard(port, async command => readBoardInfo(command,
+      await identify(command, 'sender', factory)), {restart:upload});
+    if (!sender.masterEditable) throw Error('Select Upload sender firmware to enable master setup.');
+    if (sender.protocol !== radioProtocol) throw Error('The master sender firmware uses a different radio protocol. Upload the sender firmware from this page.');
+    master.sender = sender;
+    return sender;
+  }
+  if (master.targets.length < master.count) {
+    return withBoard(port, async command => {
+      const identity = await identify(command, 'receiver');
+      if (master.targets.some(target => target.mac === identity.mac))
+        throw Error('This receiver is already in the list. Connect the next receiver.');
+      const before = await readBoardInfo(command, identity);
+      if (before.protocol !== radioProtocol || !before.ready)
+        throw Error('This receiver must be running compatible CraneLink firmware with ESP-NOW ready.');
+      const occupied = before.slots.find(slot => slot.mac === master.sender.mac);
+      const slot = occupied?.slot ?? [1, 2, 3, 4].find(number => !before.slots.some(slot => slot.slot === number));
+      if (!slot) throw Error('All sender slots are taken. Free a slot on this receiver or choose another receiver.');
+      let key = master.pending.get(identity.factory);
+      if (!key) {
+        key = randomHex(16);
+        master.pending.set(identity.factory, key);
+      }
+      await acknowledge(command, 'peer ' + slot + ' ' + master.sender.mac + ' ' + key, 'CL PEER ' + slot);
+      const after = await readBoardInfo(command, identity);
+      if (!after.slots.some(item => item.slot === slot && item.mac === master.sender.mac))
+        throw Error('Could not verify the saved sender slot. Retry with the same receiver.');
+      const name = /^[A-Za-z0-9-]{1,32}$/.test(after.ssid ?? '') ? after.ssid : identity.mac.replaceAll(':', '');
+      master.targets.push({mac:identity.mac, name, key});
+      return after;
+    });
+  }
+  return withBoard(port, async command => {
+    const identity = await identify(command, 'sender', master.sender.factory);
+    if (identity.mac !== master.sender.mac) throw Error('The sender address changed. Begin master setup again with this sender.');
+    await acknowledge(command, 'targets-begin ' + master.targets.length, 'CL TARGETS READY');
+    for (const {mac, name, key} of master.targets)
+      await acknowledge(command, `targets-add ${mac} ${key} ${name}`, 'CL TARGET ADDED');
+    await acknowledge(command, 'targets-save', 'CL TARGETS SAVED');
+    const after = await readBoardInfo(command, identity);
+    if (!after.ready || !after.targets?.[0]?.selected || after.targets.length !== master.targets.length ||
+        !master.targets.every((target, i) => after.targets[i].mac === target.mac && after.targets[i].name === target.name))
+      throw Error('Could not verify the receiver list. Retry with the same sender.');
+    master.done = true;
+    master.pending.clear();
+    for (const target of master.targets) delete target.key;
+    return after;
+  });
+}
+
+async function runMaster(upload = false) {
+  if (busy || readingInputs || master.done) return;
+  busy = true;
+  masterMessage('Select the board you just connected.');
+  try {
+    const port = await requestPort();
+    const board = await configureMaster(port, upload);
+    observedBoards.set(board.factory, board);
+    checkedBoard = board;
+    refreshReport();
+    masterMessage(master.done ? 'Receiver order saved and verified on the master sender.' : 'Board verified. Continue with the next step.');
+  } catch (error) {
+    masterMessage(error.name === 'NotFoundError' ? 'No port selected.' : error.message, true);
+  } finally {
+    busy = false;
+    showMasterStep();
+  }
+}
+
+get('masterConnect').addEventListener('click', () => void runMaster());
+get('masterUpload').addEventListener('click', () => void runMaster(true));
+
+get('batteryConfig').addEventListener('submit', async event => {
+  event.preventDefault();
+  const status = get('batteryStatus');
+  if (busy || readingInputs) {
+    status.textContent = 'Finish the upload or stop the USB check first.';
+    return;
+  }
+  busy = true;
+  const enable = get('batteryMode').value === '1';
+  status.textContent = 'Select the sender’s USB port.';
+  try {
+    const port = await requestPort();
+    const board = await withBoard(port, async command => {
+      const identity = await identify(command, 'sender');
+      const before = await readBoardInfo(command, identity);
+      if (!before.batteryEditable) throw Error('Upload the updated sender firmware first.');
+      await acknowledge(command, 'battery ' + Number(enable), 'CL BATTERY SAVED');
+      await new Promise(resolve => setTimeout(resolve, 300));
+      return readBoardInfo(command, identity);
+    });
+    if (board.battery?.enabled !== enable) throw Error('Could not verify the battery setting.');
+    observedBoards.set(board.factory, board);
+    checkedBoard = board;
+    refreshReport();
+    status.textContent = enable ? 'Battery monitoring enabled. Compare the voltage with a multimeter.' : 'Battery monitoring disabled.';
+  } catch (error) {
+    status.textContent = error.name === 'NotFoundError' ? 'No port selected.' : error.message;
+  } finally {
+    busy = false;
+  }
+});
+
 get('downloadReport').addEventListener('click', async () => {
   await downloadReport(reportBoards(), checkedBoard).catch(() => {
     get('inspectStatus').textContent = 'Could not create the PDF. Reload the page and try again.';
@@ -280,8 +447,10 @@ if (!supported) {
   get('inspect').disabled = true;
   saveNetwork.disabled = true;
   get('plan').querySelector('button').disabled = true;
+  get('masterPlan').querySelector('button').disabled = true;
+  get('batteryConfig').querySelector('button').disabled = true;
   const alert = get('compatibility');
   alert.hidden = false;
   alert.classList.add('error');
-  alert.textContent = 'Open this page over HTTPS or localhost in desktop Chrome or Edge to connect over USB.';
+  alert.textContent = 'USB setup needs HTTPS and desktop Chrome, Edge, or Android Chrome with USB host support.';
 }
