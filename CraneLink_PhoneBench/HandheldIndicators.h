@@ -18,7 +18,7 @@ public:
     linked_ = heard_ = false;
   }
 
-  void update(uint32_t now, bool paired, bool linked, bool batteryEnabled) {
+  void update(uint32_t now, bool paired, bool linked, bool batteryEnabled, bool setupWifi = false) {
     if (batteryEnabled && uint32_t(now - measuredAt_) >= 250) {
       measuredAt_ = now;
       uint32_t total = 0;
@@ -60,6 +60,7 @@ public:
     else if (!linked) led = heard_ ? now % 300 < 150 : now % 1000 < 175;
     if (low_ && now % 1600 < 600) led = now % 200 < 100;
     if (selection_) led = selected < uint32_t(selection_) * 300 && selected % 300 < 125;
+    if (setupWifi && !low_) led = now % 1500 < 400 && now % 200 < 90;
     digitalWrite(ledPin, led ? HIGH : LOW);
     const bool searchSound = paired && !linked && !heard_ && !selection_ && now % 10000 < 240;
     const bool sounding = low_ ? alarm < 540 && alarm % 180 < 80 :

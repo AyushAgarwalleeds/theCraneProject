@@ -1,7 +1,7 @@
 import {ESPLoader, Transport} from './vendor/esptool.js';
-import {acknowledge, FirmwareUpdateRequired, identify, probeRole, readBoardInfo, withBoard} from './serial.mjs?v=5';
-import {renderReport, downloadReport} from './report.mjs?v=5';
-import {requestPort, supported, useAndroidUsb} from './usb.mjs?v=5';
+import {acknowledge, FirmwareUpdateRequired, identify, probeRole, readBoardInfo, withBoard} from './serial.mjs?v=6';
+import {renderReport, downloadReport} from './report.mjs?v=6';
+import {requestPort, supported, useAndroidUsb} from './usb.mjs?v=6';
 
 const parts = [
   ['bootloader.bin', 0x1000],
@@ -10,7 +10,7 @@ const parts = [
   ['app.bin', 0x10000],
 ];
 const radioProtocol = 4;
-const firmwareRelease = 5;
+const firmwareRelease = 6;
 const get = id => document.getElementById(id);
 const connect = get('connect');
 const configure = get('configure');
@@ -309,18 +309,20 @@ get('masterCancel').addEventListener('click', () => {
   if (busy) return;
   if (!master.targets.length || master.done) master = undefined;
   get('receiverCount').disabled = !!master;
-  get('masterPlan').querySelector('button').textContent = master ? 'Resume master setup' : 'Set up master sender';
+  get('masterPlan').querySelector('button').textContent = master ? 'Resume master setup' : 'Set up master sender over USB';
   get('master').hidden = true;
   get('masterPlan').hidden = false;
 });
 
+async function uploadHandheld(port, progressBar, reportStatus) {
+  if (await withBoard(port, probeRole) === 'receiver')
+    throw Error('This board identifies as a receiver. Connect your handheld to upload sender firmware.');
+  return flash(port, 'sender', {progressBar, reportStatus, exclude:null});
+}
+
 async function configureMaster(port, upload) {
   if (!master.sender) {
-    if (upload && await withBoard(port, probeRole) === 'receiver')
-      throw Error('This board identifies as a receiver. Connect your handheld to upload sender firmware.');
-    const factory = upload ? await flash(port, 'sender', {
-      progressBar:get('masterProgress'), reportStatus:masterMessage, exclude:null
-    }) : undefined;
+    const factory = upload ? await uploadHandheld(port, get('masterProgress'), masterMessage) : undefined;
     const sender = await withBoard(port, async command => readBoardInfo(command,
       await identify(command, 'sender', factory)), {restart:upload});
     if (!sender.masterEditable) throw Error('Select Upload sender firmware to enable master setup.');
@@ -393,6 +395,35 @@ async function runMaster(upload = false) {
 get('masterConnect').addEventListener('click', () => void runMaster());
 get('masterUpload').addEventListener('click', () => void runMaster(true));
 
+get('wirelessUpload').addEventListener('click', async event => {
+  const status = get('wirelessStatus');
+  if (busy || readingInputs) {
+    status.textContent = 'Finish the current USB operation first.';
+    return;
+  }
+  const button = event.currentTarget;
+  const progressBar = get('wirelessProgress');
+  busy = button.disabled = true;
+  status.textContent = 'Select the handheld’s USB port.';
+  try {
+    const port = await requestPort();
+    const factory = await uploadHandheld(port, progressBar, text => { status.textContent = text; });
+    const sender = await withBoard(port, async command => readBoardInfo(command,
+      await identify(command, 'sender', factory)), {restart:true});
+    if (!sender.wirelessEditable || !sender.setupAp)
+      throw Error('Could not read the setup Wi-Fi credentials. Reconnect the handheld and check USB diagnostics.');
+    observedBoards.set(sender.factory, sender);
+    checkedBoard = sender;
+    refreshReport();
+    status.textContent = 'Handheld updated. Its setup Wi-Fi name, password and station MAC are in Setup details.';
+  } catch (error) {
+    status.textContent = error.name === 'NotFoundError' ? 'No port selected.' : error.message;
+  } finally {
+    busy = button.disabled = false;
+    progressBar.hidden = true;
+  }
+});
+
 get('batteryConfig').addEventListener('submit', async event => {
   event.preventDefault();
   const status = get('batteryStatus');
@@ -448,6 +479,7 @@ if (!supported) {
   saveNetwork.disabled = true;
   get('plan').querySelector('button').disabled = true;
   get('masterPlan').querySelector('button').disabled = true;
+  get('wirelessUpload').disabled = true;
   get('batteryConfig').querySelector('button').disabled = true;
   const alert = get('compatibility');
   alert.hidden = false;

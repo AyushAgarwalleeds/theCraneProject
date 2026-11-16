@@ -46,11 +46,16 @@ test('USB diagnostics assemble fragmented receiver replies and release the port'
 test('USB diagnostics distinguish a saved peer from a live link and report grounded GPIOs', async () => {
   const port = usbDevice(line => line === 'identify'
     ? ['CL IDENT SENDER 02:06:1C:00:00:02 10:06:1C:00:00:02\n']
-    : ['CL TARGET 10:06:1C:00:00:01 6 1 0\nCL INPUTS 81\nCL INFO DONE\n']);
+    : ['CL FEATURES MASTER BATTERY WIRELESS\n',
+       'CL SETUP AP CraneLink-TX-10061C000002 1234567890ABCDEF12345678 192.168.4.1 0\n',
+       'CL TARGET 10:06:1C:00:00:01 6 1 0\nCL INPUTS 81\nCL INFO DONE\n']);
   const info = await withBoard(port, async command => readBoardInfo(command, await identify(command)));
   assert.equal(info.ready, true);
   assert.equal(info.linked, false);
   assert.equal(info.inputs, 0x81);
+  assert.equal(info.wirelessEditable, true);
+  assert.deepEqual(info.setupAp, {ssid:'CraneLink-TX-10061C000002', password:'1234567890ABCDEF12345678',
+    ip:'192.168.4.1', active:false});
 });
 
 test('master setup keeps existing sender slots and saves distinct keys in receiver order', async () => {

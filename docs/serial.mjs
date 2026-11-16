@@ -140,7 +140,10 @@ export async function readBoardInfo(command, identity) {
       result.networkEditable = fields.includes('NETWORK');
       result.masterEditable = fields.includes('MASTER');
       result.batteryEditable = fields.includes('BATTERY');
+      result.wirelessEditable = fields.includes('WIRELESS');
     }
+    if (kind === 'SETUP' && fields[0] === 'AP' && fields.length === 5)
+      result.setupAp = {ssid:fields[1], password:fields[2], ip:fields[3], active:fields[4] === '1'};
     if (kind === 'PROTOCOL') result.protocol = Number(fields[0]);
     if (kind === 'PICK') {
       result.targets ??= [];

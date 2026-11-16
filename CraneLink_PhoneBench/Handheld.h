@@ -2,12 +2,15 @@
 
 #include <WiFi.h>
 #include <Preferences.h>
+#include <WebServer.h>
+#include <esp_random.h>
 #include <esp_wifi.h>
 #include "RadioLink.h"
 #include "SerialLine.h"
 #include "StopResetGesture.h"
 #include "ReceiverSelectGesture.h"
 #include "HandheldIndicators.h"
+#include "MasterSetupPage.h"
 
 class Handheld {
 public:
@@ -27,8 +30,24 @@ public:
       loadSetup();
       batteryEnabled_ = storage_.getBool("battery", false);
     }
-    ready_ = (!setup_.local[0] || esp_iface_mac_addr_set(setup_.local, ESP_MAC_WIFI_STA) == ESP_OK) &&
-             WiFi.mode(WIFI_STA) && WiFi.setSleep(false) &&
+    memcpy(stationMac_, setup_.local[0] ? setup_.local : mac, sizeof(stationMac_));
+    const bool macReady = !setup_.local[0] || esp_iface_mac_addr_set(setup_.local, ESP_MAC_WIFI_STA) == ESP_OK;
+    setupMode_ = setupRequestedAtBoot();
+    const bool wifiReady = WiFi.mode(setupMode_ ? WIFI_AP : WIFI_STA);
+    if (wifiReady) {
+      uint8_t factory[6]{};
+      esp_efuse_mac_get_default(factory);
+      loadSetupNetwork(factory);
+    }
+    if (setupMode_) {
+      if (wifiReady && macReady) startSetupPortal();
+      if (!portalReady_) {
+        WiFi.mode(WIFI_OFF);
+        Serial.println("Handheld Wi-Fi setup could not start. Power cycle and try again.");
+      }
+      return;
+    }
+    ready_ = macReady && wifiReady && WiFi.setSleep(false) &&
              esp_wifi_set_channel(radioChannel, WIFI_SECOND_CHAN_NONE) == ESP_OK && link_.begin();
     if (!ready_) {
       Serial.println("ESP-NOW failed to start.");
@@ -42,6 +61,19 @@ public:
     serial_.poll([&](String line) { processLine(line); });
     const uint32_t now = millis();
     const uint8_t raw = readButtons(now);
+    if (setupMode_) {
+      indicators_.update(now, false, false, batteryEnabled_, portalReady_);
+      if (restartPending_ && uint32_t(now - restartRequestedAt_) >= 250) ESP.restart();
+      if (portalReady_) {
+        portal_.handleClient();
+        if (uint32_t(now - lastSetupUse_) >= 15u * 60u * 1000u) {
+          portal_.stop();
+          WiFi.mode(WIFI_OFF);
+          portalReady_ = false;
+        }
+      }
+      return;
+    }
     indicators_.update(now, setup_.count != 0, nonce_ != 0 && !switching_, batteryEnabled_);
     const uint8_t selectionButtons = (filtered_ & 64) | (raw & ~uint8_t(64));
     const auto gesture = setup_.count > 1 ? selectGesture_.update(selectionButtons, now) : ReceiverSelectGesture::normal;
@@ -106,6 +138,141 @@ private:
     uint8_t count = 0;
   };
 
+  bool setupRequestedAtBoot() {
+    const uint32_t start = millis();
+    // Require only Power to be held continuously throughout startup.
+    while (readButtons(millis()) == 64) {
+      if (uint32_t(millis() - start) >= 3000) return true;
+      delay(10);
+    }
+    return false;
+  }
+
+  static String randomHex() {
+    uint8_t bytes[12];
+    esp_fill_random(bytes, sizeof(bytes));
+    char hex[sizeof(bytes) * 2 + 1]{};
+    for (size_t i = 0; i < sizeof(bytes); ++i)
+      snprintf(hex + 2 * i, 3, "%02X", unsigned(bytes[i]));
+    return String(hex);
+  }
+
+  void loadSetupNetwork(const uint8_t* factory) {
+    String address = formatMac(factory);
+    address.replace(":", "");
+    setupSsid_ = "CraneLink-TX-" + address;
+    if (!storageReady_) return;
+    setupPassword_ = storage_.getString("tx-wifi-key", "");
+    if (setupPassword_.length() != 24) {
+      setupPassword_ = randomHex();
+      if (storage_.putString("tx-wifi-key", setupPassword_) != setupPassword_.length()) setupPassword_ = "";
+    }
+  }
+
+  bool parseTarget(Target& target, const String& mac, const String& key, const String& name) const {
+    if (!name.length() || name.length() >= sizeof(target.name) ||
+        !parseMac(mac, target.peer.mac) || !parseKey(key, target.peer.key) ||
+        !target.peer.configured() || !memcmp(target.peer.mac, stationMac_, 6)) return false;
+    for (size_t i = 0; i < name.length(); ++i) {
+      const char c = name[i];
+      if (!(c >= '0' && c <= '9') && !(c >= 'A' && c <= 'Z') &&
+          !(c >= 'a' && c <= 'z') && c != '-') return false;
+    }
+    name.toCharArray(target.name, sizeof(target.name));
+    return true;
+  }
+
+  void sendSetupPage(int code = 200, const char* message = nullptr) {
+    String page;
+    page.reserve(4800);
+    page += FPSTR(masterSetupHead);
+    if (message) page += String(F("<p class=\"notice\" role=\"status\">")) + message + F("</p>");
+    page += F("<p>Enter this sender station MAC on each receiver's settings page. <code>");
+    page += formatMac(stationMac_) + F("</code></p><h2>Receiver order</h2>");
+    if (!setup_.count) page += F("<p>Add your first receiver below.</p>");
+    else {
+      page += F("<ol>");
+      for (uint8_t i = 0; i < setup_.count; ++i) {
+        const auto& target = setup_.targets[i];
+        page += String(F("<li>")) + target.name + F(" <code>") + formatMac(target.peer.mac) + F("</code></li>");
+      }
+      page += F("</ol>");
+    }
+    const String nonceField = String(F("<input type=\"hidden\" name=\"nonce\" value=\"")) + setupNonce_ + F("\">");
+    page += String(F("<form method=\"post\" action=\"/receiver\">")) + nonceField;
+    page += FPSTR(masterSetupFields);
+    page += String(F("<form method=\"post\" action=\"/restart\">")) + nonceField;
+    page += F("<button type=\"submit\">Finish and restart handheld</button></form></main></html>");
+    portal_.sendHeader("Cache-Control", "no-store");
+    portal_.sendHeader("Content-Security-Policy", "default-src 'none'; style-src 'unsafe-inline'; form-action 'self'; frame-ancestors 'none'");
+    portal_.send(code, "text/html; charset=utf-8", page);
+  }
+
+  bool allowSetupPost() {
+    if (restartPending_ || portal_.arg("nonce") != setupNonce_) {
+      portal_.send(403, "text/plain", "Open the handheld setup page again.");
+      return false;
+    }
+    lastSetupUse_ = millis();
+    return true;
+  }
+
+  void addWirelessTarget() {
+    if (!allowSetupPost()) return;
+    Target target;
+    String name = portal_.arg("name"), mac = portal_.arg("mac"), key = portal_.arg("key");
+    name.trim();
+    mac.trim();
+    key.trim();
+    if (!parseTarget(target, mac, key, name)) {
+      sendSetupPage(400, "Check the label, receiver station MAC and 32-digit shared key.");
+      return;
+    }
+    TargetSetup next = setup_;
+    uint8_t slot = 0;
+    while (slot < next.count && memcmp(next.targets[slot].peer.mac, target.peer.mac, 6)) ++slot;
+    if (slot == maxSenders) {
+      sendSetupPage(409, "This handheld already has four receivers. Use USB master setup to replace the list.");
+      return;
+    }
+    if (slot == next.count) ++next.count;
+    next.targets[slot] = target;
+    if (!saveSetup(next)) {
+      sendSetupPage(500, "Could not save the receiver. Try again.");
+      return;
+    }
+    setup_ = next;
+    sendSetupPage(200, "Receiver saved. Add another or finish setup.");
+  }
+
+  void startSetupPortal() {
+    const IPAddress ip(192, 168, 4, 1);
+    if (!setupPassword_.length() || !WiFi.softAPConfig(ip, ip, IPAddress(255, 255, 255, 0)) ||
+        !WiFi.softAP(setupSsid_.c_str(), setupPassword_.c_str(), radioChannel, false, 1)) {
+      return;
+    }
+    setupNonce_ = randomHex();
+    portal_.on("/", HTTP_GET, [this] {
+      lastSetupUse_ = millis();
+      sendSetupPage();
+    });
+    portal_.on("/receiver", HTTP_POST, [this] { addWirelessTarget(); });
+    portal_.on("/restart", HTTP_POST, [this] {
+      if (!allowSetupPost()) return;
+      if (readButtons(millis())) {
+        sendSetupPage(409, "Release the handheld buttons, then retry.");
+        return;
+      }
+      portal_.sendHeader("Cache-Control", "no-store");
+      portal_.send(200, "text/plain", "Restarting the handheld. Disconnect your phone from the receiver Wi-Fi before using the handheld.");
+      restartPending_ = true;
+      restartRequestedAt_ = millis();
+    });
+    portal_.begin();
+    lastSetupUse_ = millis();
+    portalReady_ = true;
+  }
+
   void loadSetup() {
     if (storage_.getBytesLength("targets-v1") == sizeof(setup_) &&
         storage_.getBytes("targets-v1", &setup_, sizeof(setup_)) == sizeof(setup_) &&
@@ -165,23 +332,15 @@ private:
       const int keyEnd = macEnd < 0 ? -1 : line.indexOf(' ', macEnd + 1);
       Target next;
       const String name = keyEnd < 0 ? "" : line.substring(keyEnd + 1);
-      bool valid = keyEnd > macEnd && name.length() && name.length() < sizeof(next.name) &&
-                   parseMac(line.substring(12, macEnd), next.peer.mac) &&
-                   parseKey(line.substring(macEnd + 1, keyEnd), next.peer.key) && next.peer.configured();
-      for (size_t i = 0; valid && i < name.length(); ++i) {
-        const char c = name[i];
-        valid = (c >= '0' && c <= '9') || (c >= 'A' && c <= 'Z') || (c >= 'a' && c <= 'z') || c == '-';
-      }
+      bool valid = keyEnd > macEnd && parseTarget(next, line.substring(12, macEnd),
+                                                  line.substring(macEnd + 1, keyEnd), name);
       for (uint8_t i = 0; valid && i < pending_.count; ++i)
         valid = memcmp(next.peer.mac, pending_.targets[i].peer.mac, 6) != 0;
-      uint8_t own[6]{};
-      valid = valid && esp_wifi_get_mac(WIFI_IF_STA, own) == ESP_OK && memcmp(next.peer.mac, own, 6);
       if (!valid) {
         expectedTargets_ = 0;
         Serial.println("CL ERROR Invalid or duplicate receiver.");
         return;
       }
-      name.toCharArray(next.name, sizeof(next.name));
       pending_.targets[pending_.count++] = next;
       Serial.println("CL TARGET ADDED");
       return;
@@ -239,15 +398,16 @@ private:
       return;
     }
     if (line == "identify") {
-      uint8_t mac[6]{}, factory[6]{};
+      uint8_t factory[6]{};
       esp_efuse_mac_get_default(factory);
-      if (esp_wifi_get_mac(WIFI_IF_STA, mac) != ESP_OK) memcpy(mac, factory, sizeof(mac));
-      Serial.printf("CL IDENT SENDER %s %s\n", formatMac(mac).c_str(), formatMac(factory).c_str());
+      Serial.printf("CL IDENT SENDER %s %s\n", formatMac(stationMac_).c_str(), formatMac(factory).c_str());
       return;
     }
     if (line == "setup-info") {
       Serial.printf("CL PROTOCOL %u\n", unsigned(wireVersion));
-      Serial.println("CL FEATURES MASTER BATTERY");
+      Serial.println("CL FEATURES MASTER BATTERY WIRELESS");
+      if (setupPassword_.length())
+        Serial.printf("CL SETUP AP %s %s 192.168.4.1 %u\n", setupSsid_.c_str(), setupPassword_.c_str(), unsigned(portalReady_));
       Serial.printf("CL BATTERY %u %lu %u\n", unsigned(batteryEnabled_),
                     static_cast<unsigned long>(indicators_.batteryMv()), unsigned(indicators_.low()));
       for (uint8_t i = 0; i < setup_.count; ++i) {
@@ -287,9 +447,7 @@ private:
       Serial.println("Use: pair RECEIVER_MAC 32_HEX_KEY");
       return;
     }
-    uint8_t own[6]{};
-    esp_wifi_get_mac(WIFI_IF_STA, own);
-    if (!memcmp(next.local[0] ? next.local : own, peer.mac, sizeof(own))) {
+    if (!memcmp(next.local[0] ? next.local : stationMac_, peer.mac, sizeof(stationMac_))) {
       Serial.println("Enter the receiver MAC, which must differ from this sender MAC.");
       return;
     }
@@ -297,7 +455,7 @@ private:
       Serial.println("CL ERROR radio unavailable");
       return;
     }
-    const bool changeMac = assignLocal && memcmp(next.local, own, sizeof(own));
+    const bool changeMac = assignLocal && memcmp(next.local, stationMac_, sizeof(stationMac_));
     if (!changeMac && !link_.setPeer(peer)) {
       activate(selected_, millis(), false);
       Serial.println("CL ERROR could not set receiver peer");
@@ -318,14 +476,17 @@ private:
   }
 
   void showInfo() {
-    uint8_t mac[6]{};
-    if (esp_wifi_get_mac(WIFI_IF_STA, mac) != ESP_OK) esp_read_mac(mac, ESP_MAC_WIFI_STA);
-    Serial.printf("Sender MAC %s, channel %u. Receiver %s\n", formatMac(mac).c_str(),
+    Serial.printf("Sender MAC %s, channel %u. Receiver %s\n", formatMac(stationMac_).c_str(),
                   unsigned(radioChannel), setup_.count ? formatMac(setup_.targets[selected_].peer.mac).c_str() : "not set");
   }
 
   RadioLink link_;
   Preferences storage_;
+  WebServer portal_{80};
+  String setupSsid_, setupPassword_, setupNonce_;
+  uint8_t stationMac_[6]{};
+  uint32_t lastSetupUse_ = 0, restartRequestedAt_ = 0;
+  bool setupMode_ = false, portalReady_ = false, restartPending_ = false;
   TargetSetup setup_, pending_;
   HandheldIndicators indicators_;
   ReceiverSelectGesture selectGesture_;

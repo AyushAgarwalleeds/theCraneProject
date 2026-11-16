@@ -17,6 +17,18 @@ The installer shows the receiver's Wi-Fi name, password, and phone controls addr
 
 ## Master sender
 
+### Add receivers at their installed locations
+
+1. On the [CraneLink installer](https://thecraneproject.vercel.app/#wireless), connect the handheld by USB and choose **Update handheld firmware**. Keep its **Station MAC**, **Setup Wi-Fi name**, and **Setup Wi-Fi password** from the report. This step is needed once for the handheld. Receivers on radio protocol 4 can use their existing phone settings.
+2. With the receiver idle, join its Wi-Fi and open `http://192.168.4.1/`. Open **Settings and sender pairing**. Choose an **Empty slot**, or the existing slot for this same handheld. Paste the handheld’s **Station MAC** into **Sender station MAC**. Tap **Generate pairing key**. Copy the **Shared key** and **Receiver station MAC** before tapping **Save sender slot**. Keep the key private. Each receiver needs its own key.
+3. Turn the handheld off. Hold **Power** while turning the handheld on, keep holding for three seconds, then release. The LED gives a repeating double flash as the setup Wi-Fi runs. Join the handheld’s **CraneLink-TX-…** network using its setup password. If the phone reports no internet, stay on this Wi-Fi. Open or reload `http://192.168.4.1/`. Confirm the header says **Handheld setup**.
+4. Enter a label such as `MH14AB4292`, the **receiver station MAC**, and the **same shared key** from that receiver. Tap **Save receiver** and check the order shown. To add another, join that receiver’s Wi-Fi and repeat the receiver step, then reconnect to handheld Wi-Fi and add the entry. The same receiver MAC updates its entry in place.
+5. Tap **Finish and restart handheld** or power cycle with all buttons released. Disconnect the phone from receiver Wi-Fi. The handheld starts on receiver 1. On a disconnected relay bench, confirm the selected receiver when switching and verify the other receivers don’t respond.
+
+The handheld setup Wi-Fi pauses control and times out after 15 minutes of inactivity. To reopen it, hold Power at startup again. A receiver must have an available sender slot or a slot for this handheld. Keep each receiver’s own pairing key with its label until its handheld entry is saved.
+
+### Pair over USB
+
 1. Open **Master sender** and choose two to four receivers. Connect the handheld by USB and click **Read sender over USB**. If prompted, use **Upload sender firmware** for this board.
 2. Unplug the handheld. Connect one configured receiver at a time and click **Add connected receiver**. Connect them in the order you want to select them. Each receiver needs one free sender slot or a slot for the same handheld. The wizard renews the key if the handheld is already saved there and keeps the other sender slots.
 3. Reconnect the same handheld and click **Save to master sender**. Its new list replaces its previous receiver list. Complete the wizard in the same tab. The website shows the final order using the receivers’ Wi-Fi names, and USB diagnostics shows the currently selected receiver.
@@ -42,7 +54,29 @@ The handheld sends a release to the previous receiver and waits one second befor
 
 After wiring the divider, connect the sender by USB and enable **USB diagnostics → Sender battery monitoring**. Check the reported voltage against a multimeter. The warning starts at approximately 3.50 V under load and clears above about 3.65 V. A sender powered only by USB can show that it is waiting for valid pack voltage.
 
-The pictured USB-C board appears to be a TP4056-type 1S charger with protected OUT terminals. Confirm the markings on your board and use it only with a matched 1S parallel pack rated for 4.2 V charging. Use the protected OUT+ and OUT− for the load and switch the sender off while charging. The charger output follows the pack voltage. Use an existing regulated 5 V boost module only if it is specified for the pack’s full operating range, including below 3.5 V, and supplies enough current for your ESP32 board. The second pictured module resembles an XL6009 board. If its chip is marked XL6009, its specified input starts at 5 V, so it is unsuitable for this pack. Check the regulator output with a meter before connecting it to the ESP32. Use one ESP32 power source at a time. [TP4056 datasheet](https://www.toppwr.com/uploadfile/file/20240130/65b892bb04a3c.pdf) · [XL6009 datasheet](https://www.mantech.co.za/Datasheets/Products/xl6009.pdf) · [Espressif DevKitC power inputs](https://docs.espressif.com/projects/esp-dev-kits/en/latest/esp32/esp32-devkitc/user_guide.html)
+The pictured USB-C board appears to be a TP4056-type 1S charger. Confirm that your board has separate **B+**, **B−**, **OUT+**, and **OUT−** pads. Use a matched 1S parallel pack rated for 4.2 V charging. The pack connects to B+ and B−. The sender’s regulator and divider use the protected OUT+ and OUT−. Use this diagram with a suitable common-ground boost converter. [TP4056 datasheet](https://www.toppwr.com/uploadfile/file/20240130/65b892bb04a3c.pdf)
+
+```text
+Protected OUT+ ── sender power switch ──┬──── boost IN+
+                                       │
+                                      10 kΩ
+                                       │
+                                       ├──── GPIO34 (use the junction of the two resistors)
+                                       │
+                                      10 kΩ
+                                       │
+Protected OUT− ────────────────────────┴──── boost IN− / ESP32 GND
+
+Boost OUT+ (set to 5.0 V) ── ESP32 development board 5V input
+Boost OUT− ───────────────── ESP32 GND
+GPIO23 ── 470 Ω resistor ──── LED anode (+) / LED cathode (−) ── GND
+GPIO18 ───────────────────── passive 3.3 V piezo (+) / piezo (−) ── GND
+```
+
+1. Use two equal **10 kΩ** resistors. Add an optional **100 nF** ceramic capacitor from the GPIO34 junction to GND. With the sense wire disconnected from the ESP32, put the meter’s black probe on OUT− and red probe on the resistor junction. The junction should read half the voltage across protected OUT+ and OUT−. For a **4.20 V** pack, expect about **2.10 V** at the junction. [Espressif ADC hardware guide](https://docs.espressif.com/projects/esp-hardware-design-guidelines/en/latest/esp32/schematic-checklist.html#adc)
+2. Set and measure the boost output at **5.0 V** before attaching the ESP32. Choose a converter specified for the full 1S pack range, including below the 3.50 V warning threshold. If the pictured converter is stamped **XL6009**, its specified input starts at **5 V**, so use a 1S-rated converter. Switch the sender off while charging through the TP4056 board. Turn the battery switch off before powering the ESP32 through its USB port. [XL6009 datasheet](https://www.mantech.co.za/Datasheets/Products/xl6009.pdf) · [Espressif DevKitC power inputs](https://docs.espressif.com/projects/esp-dev-kits/en/latest/esp32/esp32-devkitc/user_guide.html#power-supply-options)
+3. The LED’s longer lead is normally the anode. The shorter lead or flat side is the cathode. Use a series resistor between GPIO23 and the anode. Connect the piezo’s marked positive lead to GPIO18 and its other lead to GND. A magnetic or powered buzzer, including a 5 V buzzer, needs a driver sized for its current and its own rated supply.
+4. Power the sender by USB with the battery switch off to enable **USB diagnostics → Sender battery monitoring**. Then unplug USB and turn on the pack to check the light and sound. To view the pack voltage over USB during a bench check, disconnect the converter’s 5 V output from the ESP32 first. Keep the sense divider and common ground connected and compare the diagnostic reading with the multimeter.
 
 The default Wi-Fi name is a 10-character code derived from the receiver’s MAC. To use a name such as `MH14AB4292`, open **Receiver Wi-Fi** in the installer, connect the receiver by USB, and disconnect the phone from receiver Wi-Fi. Enter a name and password, then click **Apply over USB**. The receiver restarts with the new Wi-Fi settings. Give each receiver a different name if you choose your own. Use a freshly generated password of 8–63 printable characters without spaces.
 

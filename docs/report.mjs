@@ -34,6 +34,11 @@ function reportSections(installed, checked) {
       for (const slot of board.slots)
         rows.push(['Sender slot ' + slot.slot, slot.mac + (slot.linked ? ' (heard)' : ' (waiting)')]);
     } else {
+      if (board.setupAp) {
+        rows.push(['Setup Wi-Fi name', board.setupAp.ssid], ['Setup Wi-Fi password', board.setupAp.password],
+          ['Setup address', 'http://' + board.setupAp.ip + '/'],
+          ['Setup mode', board.setupAp.active ? 'Wi-Fi setup active' : 'Hold Power for 3 seconds at startup']);
+      }
       rows.push(['Paired receiver MAC', board.target === '-' ? 'Unpaired' : board.target]);
       rows.push(['Radio link when read', !board.ready ? 'Unavailable or unpaired' :
         board.linked ? 'Receiver heard' : 'Waiting for receiver']);
