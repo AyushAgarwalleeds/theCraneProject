@@ -5,7 +5,7 @@ import {fileURLToPath} from 'node:url';
 
 const root = fileURLToPath(new URL('../docs', import.meta.url));
 const types = {'.html':'text/html', '.js':'text/javascript', '.mjs':'text/javascript',
-  '.css':'text/css', '.bin':'application/octet-stream'};
+  '.css':'text/css', '.bin':'application/octet-stream', '.png':'image/png', '.pdf':'application/pdf'};
 const port = Number(process.argv[2] || 8787);
 createServer(async (req, res) => {
   try {

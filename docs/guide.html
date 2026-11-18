@@ -1,0 +1,150 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="description" content="The illustrated CraneLink guide. Set up your handheld, pair installed receivers, understand the controls, and wire the battery monitor.">
+  <title>Help &amp; guide · CraneLink</title>
+  <link rel="stylesheet" href="guide.css?v=1">
+  <script type="module" src="guide.js?v=1"></script>
+</head>
+<body>
+  <a class="skip" href="#guide">Skip to guide</a>
+  <header class="topbar">
+    <a class="brand" href="./" aria-label="CraneLink setup home">CRANELINK</a>
+    <nav aria-label="Main"><a href="./">USB setup</a><a href="guide.html" aria-current="page">Help &amp; guide</a><a class="button compact" href="downloads/CraneLink-Product-Booklet.pdf" download>Download booklet</a></nav>
+  </header>
+  <div class="layout">
+    <aside class="contents">
+      <p>IN THIS GUIDE</p>
+      <nav aria-label="Guide contents">
+        <a href="#start">Start here</a><a href="#first-setup">First USB setup</a><a href="#controls">Everyday controls</a>
+        <a href="#phone">Use your phone</a><a href="#master">Pair more receivers</a><a href="#connections">Connect the boards</a>
+        <a href="#battery">Battery, LED &amp; buzzer</a><a href="#settings">Make it yours</a><a href="#troubleshooting">Solve a problem</a>
+        <a href="#replace">Replace a board</a><a href="#print">Print the booklet</a>
+      </nav>
+    </aside>
+    <main id="guide">
+      <section class="hero" id="start">
+        <p class="eyebrow">THE CRANELINK HANDBOOK</p>
+        <h1>From the first wire<br>to the first press.</h1>
+        <p class="lead">Set up your handheld, connect the right receiver, and know what every button does.</p>
+        <div class="actions"><a class="button" href="#first-setup">Set up my boards</a><a class="button secondary" href="#master">Add an installed receiver</a></div>
+        <div class="system-picture" aria-label="A handheld sends ESP-NOW commands to a receiver, which operates eight relay outputs.">
+          <div class="handheld drawing"><span class="device-led"></span><span class="device-label">HANDHELD</span><div class="keypad" aria-hidden="true"><i></i><i></i><i></i><i></i><i></i><i></i></div><div class="device-base"><span>POWER</span><span>STOP</span></div></div>
+          <div class="radio-path"><span>ESP-NOW</span><div class="signal" aria-hidden="true"><i></i></div><small>Direct radio link</small></div>
+          <div class="receiver drawing"><span class="device-label">RECEIVER</span><div class="relay-bank" aria-hidden="true"><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i></div><small>Eight relay outputs</small></div>
+        </div>
+        <p class="notice"><strong>Use this guide with the current ESP32-WROOM relay bench.</strong> Keep relay contacts disconnected from the crane and 110 V wiring during setup and testing. Crane service requires an independent safety-rated stop circuit and a qualified controls review.</p>
+        <div class="choice-row"><a href="#connections">I need the pin connections</a><a href="#troubleshooting">My sender stopped working</a><a href="#print">I want a printed manual</a></div>
+      </section>
+
+      <section id="first-setup">
+        <p class="eyebrow">GET CONNECTED</p><h2>Your first USB setup</h2>
+        <p>Have the receiver, each handheld, and a USB data cable ready. Use desktop Chrome or Edge. Android Chrome can also use a compatible USB host/OTG cable and adapter. Use a desktop browser for iPhone or iPad USB installation.</p>
+        <div class="walkthrough" data-walkthrough="usb">
+          <div class="walkthrough-art" aria-hidden="true"><div class="usb-host">USB SETUP</div><div class="usb-cable"></div><div class="usb-board"><span class="usb-role">Receiver</span><div class="usb-chip">ESP32</div></div></div>
+          <div><p class="step-position">Step <span data-position>1</span> of 4</p><h3 data-step-title>Choose the handheld count</h3><p data-step-description>Open USB setup, choose one to four handhelds, and press Start setup.</p>
+            <div class="actions"><button class="secondary" data-previous disabled>Previous</button><button data-next>Next step</button></div>
+            <p class="small">Illustrated walkthrough. Connect and upload from the USB setup page.</p>
+          </div>
+        </div>
+        <details><summary>Read all four steps</summary><ol class="steps"><li>Open <a href="./">USB setup</a>, choose one to four handhelds, and press <strong>Start setup</strong>.</li><li>Plug in the receiver. Choose <strong>Connect and upload</strong> and select its USB port. Wait until pairing is saved.</li><li>Unplug that board. Upload each sender when prompted, in the same browser tab. The receiver gets a new sender list in this workflow.</li><li>Save the <strong>Download PDF</strong> setup report. Power both boards, disconnect the phone from receiver Wi-Fi, release every button, and test a direction.</li></ol></details>
+        <div class="callout"><strong>Keep your setup report.</strong><p>It contains each board’s station MAC, receiver Wi-Fi name and password, and the handheld’s private setup Wi-Fi details. Store it privately.</p></div>
+      </section>
+
+      <section id="controls">
+        <p class="eyebrow">DAILY USE</p><h2>Press, hold, release.</h2>
+        <p>Power both boards and release every button before starting. A direction operates while you hold it. With the default assignments, its relay and R8 energize together, then release together.</p>
+        <div class="gesture-grid">
+          <article class="gesture"><h3>Power On/Off</h3><div class="hold-track" aria-hidden="true"><span></span></div><p class="duration">Hold 3 seconds, then release</p><p>Repeat the hold to toggle Power off. It also turns off after 60 minutes of inactivity by default, or on controlling-link loss or Emergency Stop.</p></article>
+          <article class="gesture stop-gesture"><h3>Emergency Stop</h3><div class="stop-key" aria-hidden="true">STOP</div><p class="duration">Press to turn all eight outputs off</p><p>To reset, release all buttons, hold <strong>Power + Emergency Stop</strong> together for three seconds, then release both. Start a new direction press after reset.</p></article>
+        </div>
+        <p class="notice">The software Stop commands all relay outputs off. It cannot detect welded relay contacts. Verify contact release with a meter during bench tests.</p>
+      </section>
+
+      <section id="phone">
+        <p class="eyebrow">CONTROL HANDOFF</p><h2>Handheld first. Phone when you need it.</h2>
+        <p>The handheld works after power-up with the phone disconnected from receiver Wi-Fi. To use the phone, join the receiver’s Wi-Fi and open <code>http://192.168.4.1/</code>. Stay connected if the phone reports “no internet”.</p>
+        <div class="handoff" data-mode="handheld">
+          <div class="segmented" role="group" aria-label="Explain a control situation"><button data-mode-choice="handheld" aria-pressed="true">Handheld</button><button data-mode-choice="phone" aria-pressed="false">Phone joined</button><button data-mode-choice="loss" aria-pressed="false">Link lost</button></div>
+          <div class="handoff-picture" aria-hidden="true"><span class="source handheld-source">Handheld</span><span class="handoff-line"></span><span class="source receiving">Receiver</span><span class="handoff-line phone-line"></span><span class="source phone-source">Phone</span></div>
+          <h3 id="handoff-title">Ready for the handheld</h3><p id="handoff-description" aria-live="polite">Release all buttons, wait for the receiver link, then press a direction. The phone page can stay closed.</p>
+        </div>
+        <ol class="steps"><li>On the phone page, tap <strong>Web Run</strong>, then hold a direction to jog.</li><li>Finish by disconnecting the phone from the receiver’s Wi-Fi. Turning Web Run off still leaves the phone joined to Wi-Fi.</li><li>Release any held handheld button, wait for the link, and press again to resume handheld control.</li></ol>
+        <p>If command packets expire, the receiver drops motion and Power. The nominal software timeout is 650 ms. Wi-Fi can take about ten seconds of inactivity to notice a phone that left range. Give a fresh press after reconnection.</p>
+      </section>
+
+      <section id="master">
+        <p class="eyebrow">ONE HANDHELD, MORE RECEIVERS</p><h2>Add a receiver where it is.</h2>
+        <p>A master handheld stores up to four receiver entries. Use the temporary setup Wi-Fi on the handheld to add installed receivers. Give each receiver a different label and pairing key.</p>
+        <div class="pairing-map"><div><span class="map-label">ON THE RECEIVER</span><h3>Save the handheld MAC</h3><p>Its sender slot holds the handheld’s address and a shared key.</p></div><span class="key-bridge">Same key<br>on both sides</span><div><span class="map-label">ON THE HANDHELD</span><h3>Save the receiver MAC</h3><p>Its receiver entry holds the receiver’s address and that same key.</p></div></div>
+        <ol class="steps"><li>In <a href="./#wireless">Wireless setup</a>, connect only the handheld by USB and select <strong>Update handheld firmware</strong>. Save its <strong>Station MAC</strong> and <strong>Setup Wi-Fi</strong> name and password from Setup details.</li><li>Join the installed receiver’s Wi-Fi and open <code>http://192.168.4.1/</code>. In <strong>Settings and sender pairing</strong>, choose an empty slot or the slot for this same handheld. Enter the handheld’s Station MAC.</li><li>Tap <strong>Generate pairing key</strong>. Copy the <strong>Receiver station MAC</strong> and <strong>Shared key</strong> before tapping <strong>Save sender slot</strong>. Release the controls and turn Web Run and Power off before saving.</li><li>Turn the handheld off. Hold <strong>Power</strong> while switching it on, keep holding for three seconds, then release. Join its <strong>CraneLink-TX-…</strong> Wi-Fi using its private setup password.</li><li>Open or reload <code>http://192.168.4.1/</code>. Confirm it says <strong>Handheld setup</strong>. Enter the receiver label, Receiver station MAC, and the same Shared key. Tap <strong>Save receiver</strong>.</li><li>Repeat for each receiver. Tap <strong>Finish and restart handheld</strong>, then disconnect the phone from receiver Wi-Fi. The handheld starts on receiver 1.</li></ol>
+        <div class="callout"><strong>Take the correct address to the correct page.</strong><p>Receiver settings need the <em>handheld</em> station MAC. Handheld setup needs the <em>receiver</em> station MAC. A key is 32 hexadecimal characters. Keep it private.</p></div>
+        <h3>Switch to the next receiver</h3>
+        <div class="sequence" aria-label="Tap Power, release, hold Power two seconds, release, count LED flashes"><span>Tap Power<small>Under 0.3 s</small></span><span>Release<small>Next press within 0.6 s</small></span><span class="sequence-hold">Hold Power<small>2 seconds</small></span><span>Release<small>Count 1–4 flashes</small></span></div>
+        <p>Wait for the flashes to finish and the link light to go solid, then press a direction. The list cycles back to receiver 1. If the selected receiver is unavailable, the handheld keeps searching for it. <strong>Emergency Stop addresses the selected receiver.</strong></p>
+        <details><summary>Use the USB master wizard instead</summary><ol class="steps"><li>Choose <strong>Master sender</strong> on the setup page and select two to four receivers.</li><li>Read the handheld over USB, then connect each receiver in selection order and choose <strong>Add connected receiver</strong>.</li><li>Reconnect the same handheld and choose <strong>Save to master sender</strong>. Complete the process in the same tab. This replaces its receiver list and needs a free slot, or its existing slot, on each receiver.</li></ol></details>
+        <p class="small">Handheld setup pauses radio control and closes its Wi-Fi after 15 minutes of inactivity. Re-enter it by holding Power at startup. Adding an existing receiver MAC updates that entry in place.</p>
+      </section>
+
+      <section id="connections">
+        <p class="eyebrow">CONNECTION GUIDE</p><h2>Follow the GPIO labels.</h2>
+        <p>Use the printed GPIO number on the board. Board layouts vary. Connect every sender button between its assigned GPIO and the sender’s GND.</p>
+        <figure><img src="guide-assets/sender.png" width="1080" height="480" alt="An open momentary switch connects sender GPIO4 to sender GND when pressed. The same wiring applies to every button."><figcaption>Each normally open button closes its GPIO to GND when pressed.</figcaption></figure>
+        <div class="tables-grid">
+          <div><h3>Sender buttons</h3><table><thead><tr><th>Button</th><th>GPIO</th></tr></thead><tbody><tr><td>Up / Down</td><td>4 / 32</td></tr><tr><td>Left / Right</td><td>33 / 25</td></tr><tr><td>Front / Back</td><td>26 / 27</td></tr><tr><td>Power On/Off</td><td>13</td></tr><tr><td>Emergency Stop</td><td>14</td></tr></tbody></table></div>
+          <div><h3>Receiver relay inputs</h3><table><thead><tr><th>Input</th><th>GPIO</th><th>Default action</th></tr></thead><tbody><tr><td>IN1 / IN2</td><td>26 / 21</td><td>Up / Down</td></tr><tr><td>IN3 / IN4</td><td>33 / 32</td><td>Left / Right</td></tr><tr><td>IN5 / IN6</td><td>27 / 14</td><td>Front / Back</td></tr><tr><td>IN7</td><td>13</td><td>Power latch</td></tr><tr><td>IN8</td><td>4</td><td>Direction enable</td></tr></tbody></table></div>
+        </div>
+        <figure><img src="guide-assets/receiver.png" width="1080" height="480" alt="Eight receiver GPIO connections feed relay inputs IN1 through IN8. The relay module uses its specified external power supply and a compatible common input ground."><figcaption>R8 follows directional jogs. R1–R7 can be reassigned in settings.</figcaption></figure>
+        <p class="notice">Use an active-low relay module with 3.3 V-compatible inputs and its specified external supply. For common-ground inputs, connect relay input GND to receiver GND. Confirm the module’s VCC and JD-VCC requirements. Keep 5 V off GPIO pins. This diagram covers low-voltage input wiring.</p>
+      </section>
+
+      <section id="battery">
+        <p class="eyebrow">HANDHELD POWER</p><h2>Read the pack before the boost converter.</h2>
+        <p>For the matched 1S parallel pack, use the charger’s protected <strong>OUT+</strong> and <strong>OUT−</strong>. Two equal resistors create a sense point at half the pack voltage.</p>
+        <figure><img src="guide-assets/battery.png" width="1080" height="600" alt="Protected OUT+ passes through the handheld power switch to a 10 kiloohm resistor. The junction goes to GPIO34. A second 10 kiloohm resistor joins the junction to protected OUT-minus and ESP32 GND. An optional 100 nanofarad capacitor joins the junction to ground."><figcaption>The junction between the two 10 kΩ resistors is the only battery sense connection to GPIO34.</figcaption></figure>
+        <div class="meter-values"><p><strong>4.20 V</strong><span>Full pack</span></p><p><strong>2.10 V</strong><span>Expected at the junction</span></p></div>
+        <ol class="steps"><li>With power off, wire <strong>switched OUT+ → 10 kΩ → junction → 10 kΩ → OUT−</strong>. Join OUT− to sender GND. Keep GPIO34 disconnected for the meter check.</li><li>Turn the pack on. Put the black DC-voltmeter probe on OUT− and the red probe on the junction. Expect half the measured pack voltage. At 4.20 V pack voltage, expect about 2.10 V.</li><li>Turn power off, then connect the junction to <strong>GPIO34</strong>. An optional <strong>100 nF</strong> ceramic capacitor goes from this junction to GND.</li><li>Turn off battery power, connect USB, then enable <strong>USB diagnostics → Sender battery monitoring</strong>. Unplug USB before switching to battery power.</li></ol>
+        <figure><img src="guide-assets/power.png" width="1080" height="450" alt="A matched parallel pack connects to charger B-plus and B-minus. Protected OUT-plus and OUT-minus feed a 1S-rated boost converter. Its regulated 5 volt output powers the development board's 5V input. GPIO34 senses the pack through the divider before the converter."><figcaption>Set and meter the boost output to 5.0 V before connecting the ESP32 development board.</figcaption></figure>
+        <p>Use a converter rated for the full 1S pack discharge range. A board stamped <strong>XL6009</strong> has a specified input starting at 5 V, so use a 1S-rated boost module for this pack. Switch the sender off while charging. Use one development-board power source at a time.</p>
+        <div class="tables-grid"><div><h3>LED and sound connections</h3><table><thead><tr><th>Part</th><th>Connection</th></tr></thead><tbody><tr><td>Status LED</td><td>GPIO23 → 470 Ω → LED anode. Cathode → GND.</td></tr><tr><td>Passive piezo</td><td>GPIO18 → piezo +. Piezo − → GND.</td></tr></tbody></table><p class="small">Use a small 3.3 V passive piezo. A powered or magnetic buzzer needs a suitable driver and its rated supply.</p></div><div><h3>Battery readings</h3><p>The low warning starts near <strong>3.50 V</strong> under load and clears above about <strong>3.65 V</strong>. Compare with a multimeter. Voltage indicates battery condition approximately.</p><p>For a USB diagnostic check with a live pack, disconnect the converter’s 5 V output from the ESP32 first. Keep the divider and common ground connected.</p></div></div>
+        <h3>Recognize the LED</h3>
+        <div class="indicator-example"><div class="segmented" role="group" aria-label="Preview a status LED pattern"><button data-led="searching" aria-pressed="true">Searching</button><button data-led="connected" aria-pressed="false">Linked</button><button data-led="lost" aria-pressed="false">Link lost</button><button data-led="low" aria-pressed="false">Battery low</button><button data-led="setup" aria-pressed="false">Setup Wi-Fi</button></div><div class="led-preview"><span class="preview-led searching" aria-hidden="true"></span><p id="led-explanation" aria-live="polite">Short flash about once a second. A periodic tone accompanies the search.</p></div></div>
+      </section>
+
+      <section id="settings">
+        <p class="eyebrow">CUSTOMIZATION</p><h2>Set it up for your receiver.</h2>
+        <div class="settings-list"><article><h3>Choose a recognizable Wi-Fi name</h3><p>In <a href="./">Receiver Wi-Fi</a>, connect the receiver by USB and disconnect the phone from receiver Wi-Fi. Enter 4–12 letters or digits, such as MH14AB4292, and an 8–63 character password without spaces. Choose <strong>Apply over USB</strong>. Names save in uppercase and the receiver restarts.</p></article><article><h3>Choose which relay does what</h3><p>On the receiver’s phone page, open <strong>Settings and sender pairing</strong>. Assign Up, Down, Left, Right, Front, Back, and Power to R1–R7. Choosing an occupied relay swaps its old assignment. Select <strong>Save relay settings</strong>. R8 is reserved.</p></article><article><h3>Set the Power timeout</h3><p>Set <strong>Power idle timeout</strong> from 1 to 720 minutes. The default is 60. Direction commands and Power holds count as activity. Idle radio packets and an open page do not extend the timeout.</p></article><article><h3>Choose direction control</h3><p><strong>All directions together</strong> is the default for the disconnected bench. <strong>NO/NC interlock</strong> allows one direction per Up/Down, Left/Right, and Front/Back pair. The first held direction wins. If both arrive together, the pair stays off. Release both before reversing after a conflict.</p></article></div>
+        <p class="small">Turn Web Run and Power off and release handheld controls before changing assignments or pairing. Software direction interlock controls commands. Use the module’s contact markings for physical NO/NC wiring.</p>
+      </section>
+
+      <section id="troubleshooting">
+        <p class="eyebrow">GET BACK TO READY</p><h2>What are you seeing?</h2>
+        <details><summary>The handheld was working, then stopped</summary><p>Disconnect the phone from receiver Wi-Fi, release every handheld button, and check the receiver selection. If Stop is latched, release the buttons, hold Power + Emergency Stop for three seconds, then release both. If the link is missing, power both boards nearby on the bench and check their saved addresses with USB diagnostics.</p></details>
+        <details><summary>My phone sees Wi-Fi but cannot open the controls</summary><p>Stay connected to the receiver’s Wi-Fi when the phone warns there is no internet. Type the full address <strong>http://192.168.4.1/</strong>. Confirm the page says CraneLink Phone Bench. The handheld uses the same address for its separate Handheld setup page, so reconnect and reload after changing networks.</p></details>
+        <details><summary>Upload succeeded but pairing failed</summary><p>Keep the same setup tab open. Reconnect the same board and select <strong>Retry pairing only</strong>. If the board reports older firmware, use <strong>Connect and upload</strong>. Release BOOT and tap EN/RESET if the board stays in upload mode. Close other programs or tabs using the USB port.</p></details>
+        <details><summary>A button appears pressed all the time</summary><p>Run <strong>Check connected board</strong> for the sender. Closed inputs should read <strong>All released</strong> when you release every button. Check the corresponding GPIO-to-GND switch circuit. The Emergency Stop input is GPIO14 and Power is GPIO13.</p></details>
+        <details><summary>The relay light comes on but its contacts do not move</summary><p>Check the module’s external supply, input voltage compatibility, and any VCC/JD-VCC jumper requirements against its markings. The page reports commanded outputs. Check the actual contact change with a continuity meter on the disconnected bench.</p></details>
+        <details><summary>Why does R8 turn on with a direction?</summary><p>R8 is the direction-enable output. It follows one or more directional commands and releases when the jog ends. The Power latch uses R7 by default and can be reassigned.</p></details>
+        <details><summary>Battery voltage is missing or wrong</summary><p>Check that battery monitoring is enabled and the divider uses two equal 10 kΩ resistors. Measure the junction against OUT−. It should be half the pack voltage before the boost converter. Confirm OUT− is connected to ESP32 GND.</p></details>
+      </section>
+
+      <section id="replace">
+        <p class="eyebrow">KEEP YOUR SETTINGS</p><h2>Replace a board.</h2>
+        <p>Before changing hardware, save your Wi-Fi names, station MACs, receiver order, relay assignments, and Power timeout. The private setup report records board identities and Wi-Fi credentials. Record relay settings separately.</p>
+        <div class="tables-grid"><article><h3>Replacement handheld</h3><p>Update the new handheld with <strong>Update handheld firmware</strong>. Read its new Station MAC. On each receiver, replace the old handheld’s sender slot with this MAC and a new shared key. Add that receiver to the new handheld through wireless setup.</p></article><article><h3>Replacement receiver</h3><p>Install the receiver role using <strong>Install and pair</strong> and complete the sender steps in that same session. Restore relay settings. For a master handheld, use wireless setup to save the replacement’s MAC and key. An added replacement has a new MAC and can consume another entry; use the USB master wizard if you need to rebuild the four-entry list.</p></article></div>
+      </section>
+
+      <section id="print" class="print-panel">
+        <p class="eyebrow">KEEP A COPY AT THE BENCH</p><h2>Your product booklet.</h2>
+        <p>A 16-page illustrated manual with setup, controls, pin tables, wiring diagrams, fault checks, and a blank equipment record.</p>
+        <div class="download-grid"><article><h3>Read or print page by page</h3><p>A5 pages in normal reading order. Use your printer’s booklet option if you want it to arrange the pages.</p><a class="button" href="downloads/CraneLink-Product-Booklet.pdf" download>Download product booklet</a></article><article><h3>Fold and staple on A4</h3><p>Four A4 sheets, already arranged as a booklet. Print actual size, landscape, double-sided, flip on the short edge. Keep booklet rearrangement off, then fold and staple.</p><a class="button secondary" href="downloads/CraneLink-A4-Print-Booklet.pdf" download>Download A4 print version</a></article></div>
+        <button class="text-button" id="printGuide" type="button">Print this web guide</button>
+        <p class="small">Guide edition 1 · 19 November 2026 · Current ESP32-WROOM relay bench firmware.</p>
+      </section>
+      <footer><p>CraneLink · Setup and connection handbook</p><p>Bench schematics show low-voltage connections. Confirm board labels and supply ratings before connecting power.</p></footer>
+    </main>
+  </div>
+</body>
+</html>
