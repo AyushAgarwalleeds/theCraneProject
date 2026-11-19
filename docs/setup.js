@@ -1,7 +1,7 @@
 import {ESPLoader, Transport} from './vendor/esptool.js';
-import {acknowledge, FirmwareUpdateRequired, identify, probeRole, readBoardInfo, withBoard} from './serial.mjs?v=6';
-import {renderReport, downloadReport} from './report.mjs?v=6';
-import {requestPort, supported, useAndroidUsb} from './usb.mjs?v=6';
+import {acknowledge, FirmwareUpdateRequired, identify, probeRole, readBoardInfo, withBoard} from './serial.mjs?v=7';
+import {renderReport, downloadReport} from './report.mjs?v=7';
+import {requestPort, supported, useAndroidUsb} from './usb.mjs?v=7';
 
 const parts = [
   ['bootloader.bin', 0x1000],
@@ -10,7 +10,7 @@ const parts = [
   ['app.bin', 0x10000],
 ];
 const radioProtocol = 4;
-const firmwareRelease = 6;
+const firmwareRelease = 7;
 const get = id => document.getElementById(id);
 const connect = get('connect');
 const configure = get('configure');
@@ -320,6 +320,19 @@ async function uploadHandheld(port, progressBar, reportStatus) {
   return flash(port, 'sender', {progressBar, reportStatus, exclude:null});
 }
 
+async function updateExistingBoard(port, role, progressBar, reportStatus) {
+  const actual = await withBoard(port, probeRole);
+  if (actual && actual !== role)
+    throw Error('This board identifies as a ' + actual + '. Connect the ' + role + ' selected for this update.');
+  // Write firmware only. Do not issue pairing, network or erase commands.
+  const factory = await flash(port, role, {progressBar, reportStatus, exclude:null});
+  const board = await withBoard(port, async command => readBoardInfo(command,
+    await identify(command, role, factory)), {restart:true});
+  if (board.protocol !== radioProtocol)
+    throw Error('The firmware version could not be verified. Check the connected board again.');
+  return board;
+}
+
 async function configureMaster(port, upload) {
   if (!master.sender) {
     const factory = upload ? await uploadHandheld(port, get('masterProgress'), masterMessage) : undefined;
@@ -395,7 +408,7 @@ async function runMaster(upload = false) {
 get('masterConnect').addEventListener('click', () => void runMaster());
 get('masterUpload').addEventListener('click', () => void runMaster(true));
 
-get('wirelessUpload').addEventListener('click', async event => {
+async function runFirmwareUpdate(event, role) {
   const status = get('wirelessStatus');
   if (busy || readingInputs) {
     status.textContent = 'Finish the current USB operation first.';
@@ -404,25 +417,27 @@ get('wirelessUpload').addEventListener('click', async event => {
   const button = event.currentTarget;
   const progressBar = get('wirelessProgress');
   busy = button.disabled = true;
-  status.textContent = 'Select the handheld’s USB port.';
+  status.textContent = 'Select the ' + role + ' USB port. Existing pairing settings will be kept.';
   try {
     const port = await requestPort();
-    const factory = await uploadHandheld(port, progressBar, text => { status.textContent = text; });
-    const sender = await withBoard(port, async command => readBoardInfo(command,
-      await identify(command, 'sender', factory)), {restart:true});
-    if (!sender.wirelessEditable || !sender.setupAp)
+    const board = await updateExistingBoard(port, role, progressBar, text => { status.textContent = text; });
+    if (role === 'sender' && (!board.wirelessEditable || !board.setupAp))
       throw Error('Could not read the setup Wi-Fi credentials. Reconnect the handheld and check USB diagnostics.');
-    observedBoards.set(sender.factory, sender);
-    checkedBoard = sender;
+    observedBoards.set(board.factory, board);
+    checkedBoard = board;
     refreshReport();
-    status.textContent = 'Handheld updated. Its setup Wi-Fi name, password and station MAC are in Setup details.';
+    status.textContent = role === 'sender'
+      ? 'Handheld updated. Saved receivers are kept. Setup details shows its MAC, Wi-Fi and recovery status.'
+      : 'Receiver updated. Saved senders, Wi-Fi and relay settings are kept. Review Setup details below.';
   } catch (error) {
     status.textContent = error.name === 'NotFoundError' ? 'No port selected.' : error.message;
   } finally {
     busy = button.disabled = false;
     progressBar.hidden = true;
   }
-});
+}
+get('wirelessUpload').addEventListener('click', event => runFirmwareUpdate(event, 'sender'));
+get('receiverUpdate').addEventListener('click', event => runFirmwareUpdate(event, 'receiver'));
 
 get('batteryConfig').addEventListener('submit', async event => {
   event.preventDefault();
@@ -480,6 +495,7 @@ if (!supported) {
   get('plan').querySelector('button').disabled = true;
   get('masterPlan').querySelector('button').disabled = true;
   get('wirelessUpload').disabled = true;
+  get('receiverUpdate').disabled = true;
   get('batteryConfig').querySelector('button').disabled = true;
   const alert = get('compatibility');
   alert.hidden = false;

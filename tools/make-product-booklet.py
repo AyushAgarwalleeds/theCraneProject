@@ -112,7 +112,7 @@ def battery_diagram(d):
     d.dot(215, 108, RED)
     d.dot(255, 108, RED)
     d.line([(215, 108), (249, 90)], RED)
-    d.text(237, 145, "Switch", 12, align="center")
+    d.text(237, 145, "Optional switch", 12, align="center")
     d.line([(255, 108), (340, 108), (340, 158)], RED)
     d.line([(340, 108), (340, 44), (620, 44)], RED)
     d.text(480, 32, "To boost IN+ (pack voltage)", 13, align="center", color=RED)
@@ -157,8 +157,8 @@ def power_diagram(d):
         d.line([(a, 159), (b, 159)])
     d.line([(363, 113), (363, 24)], GREEN)
     d.dot(363, 113, GREEN)
-    d.text(363, 16, "Power switch and divider go on this pack-voltage feed", 13, align="center", color=GREEN)
-    d.text(360, 260, "Use one ESP32 power source at a time. Switch the sender off while charging.", 13, align="center")
+    d.text(363, 16, "Optional switch and divider go on this pack-voltage feed", 13, align="center", color=GREEN)
+    d.text(360, 260, "Disconnect sender power for charging. Use one ESP32 supply at a time.", 13, align="center")
     d.text(360, 282, "Meter the boost output before connecting the board.", 13, bold=True, align="center")
 
 
@@ -264,7 +264,7 @@ class Booklet:
             raise RuntimeError(f"Content crosses footer on page {self.page}: {self.y:.1f}")
         self.c.setStrokeColor(LINE)
         self.c.line(self.margin, 30, self.width - self.margin, 30)
-        self.text(self.margin, self.height - 18, "CRANELINK  ·  EDITION 1", 7.5, MUTED)
+        self.text(self.margin, self.height - 18, "CRANELINK  ·  EDITION 2", 7.5, MUTED)
         self.text(self.width - self.margin - 14, self.height - 18, str(self.page), 8, MUTED, True)
         self.c.showPage()
 
@@ -284,7 +284,7 @@ b.y += 8
 b.p("<b>Find your next step</b>")
 b.p("First setup 3 · Controls 4 · Wireless pairing 6-7<br/>Sender wiring 8 · Receiver wiring 9 · Battery 10-12<br/>Settings 13 · Troubleshooting 14 · Equipment record 16", small=True)
 b.note("Keep relay contacts disconnected from machinery and 110 V wiring during setup and testing. Crane service requires an independent safety-rated stop circuit and a qualified controls review.")
-b.p("Online help and installer<br/><b>thecraneproject.vercel.app</b><br/>Guide edition 1 · 19 November 2026", small=True)
+b.p("Online help and installer<br/><b>thecraneproject.vercel.app</b><br/>Guide edition 2 · 20 November 2026", small=True)
 
 b.start("Before you connect.")
 b.table(["Have ready", "What it is for"], [
@@ -336,8 +336,8 @@ b.steps([
 ])
 b.note("Web Run off leaves the phone joined to Wi-Fi. Disconnect that Wi-Fi connection to give handheld motion control back.")
 b.h("When a link is lost")
-b.p("The receiver drops motion and Power when the active command stream expires. The nominal software timeout is 650 ms. The handheld keeps listening and reconnects when the selected receiver returns.")
-b.p("Wi-Fi can take about ten seconds of inactivity to notice a phone that left range. Release all controls and give a fresh press after reconnection.")
+b.p("Motion and Power drop when commands expire (nominally 650 ms). After 60 seconds out of range, the handheld searches periodically to save battery. Tap Power to search immediately, release all buttons, then give a fresh command.")
+b.p("A linked handheld keeps its radio awake all day. Wi-Fi can take about ten seconds to detect a phone that left range. The command timeout still applies. A Power tap does not reset Emergency Stop.")
 b.h("One source at a time")
 b.p("A second handheld whose press is blocked must release and press again. Both the phone and a paired handheld can issue Stop.")
 
@@ -356,14 +356,14 @@ b.p("Receivers on CraneLink radio protocol 4 can use their existing settings pag
 
 b.start("Save it on the<br/>handheld.")
 b.steps([
-    "Turn the handheld off. Hold <b>Power</b> while turning it on, keep holding for 3 seconds, then release.",
+    "Release all buttons. Hold <b>Emergency Stop alone for 8 seconds</b>, then release. This opens setup without a power switch and latches Stop on the selected receiver.",
     "Join its <b>CraneLink-TX-...</b> Wi-Fi using the private setup password. Open or reload <b>http://192.168.4.1/</b>. Confirm it says <b>Handheld setup</b>.",
     "Enter a label such as <b>MH14AB4292</b>, the <b>Receiver station MAC</b>, and the same <b>Shared key</b> from that receiver. Tap <b>Save receiver</b>.",
-    "Repeat for other receivers, switching phone networks as needed. Tap <b>Finish and restart handheld</b>. Disconnect from receiver Wi-Fi before testing handheld control.",
+    "Repeat as needed. Tap <b>Finish and return to radio</b>. Disconnect from receiver Wi-Fi. Hold Power + Stop for 3 seconds, then release both to reset Stop.",
 ])
 b.h("Switch to the next receiver")
 b.p("Tap Power for less than 0.3 seconds. Release, then press again within 0.6 seconds and hold for 2 seconds. Release and count the 1-4 LED flashes. Wait for solid link light, then press a direction.")
-b.note("The handheld starts on receiver 1. Setup Wi-Fi pauses radio control and closes after 15 minutes of inactivity. Re-enter by holding Power at startup. Re-adding the same receiver MAC updates its entry.")
+b.note("Tap and release Power to leave setup, or wait 15 minutes without use. Radio resumes on the selected receiver. After reboot it selects receiver 1. Holding Power for 3 seconds at startup also opens setup.")
 b.h("USB alternative")
 b.p("Use <b>Master sender</b> in the online installer. Read the handheld, add receivers over USB in order, then reconnect the same handheld and save. The wizard replaces the handheld receiver list.", small=True)
 
@@ -387,9 +387,9 @@ b.start("Battery power path.", "Use a matched 1S parallel lithium-ion pack with 
 b.diagram("power")
 b.steps([
     "Connect the pack to the charger's <b>B+</b> and <b>B-</b>. Use protected <b>OUT+</b> and <b>OUT-</b> for the load and sense circuit.",
-    "Put the sender power switch in the protected positive feed. Feed the boost converter and the top divider resistor from the switched side.",
+    "A power switch is optional. Without one, join the switch points and use a disconnectable power lead. Feed the boost and divider from protected OUT+.",
     "Use a 1S-rated boost converter. Set and meter its output at <b>5.0 V</b> before connecting it to the development board's <b>5V input</b> and GND.",
-    "Switch the sender off while charging. Turn off battery power before plugging USB into the ESP32 development board.",
+    "Disconnect the sender load while charging. Disconnect boost 5V from the ESP32 before powering that board by USB. The Power button does not isolate its supply.",
 ])
 b.note("A converter stamped XL6009 has a specified input starting at 5 V. Use a converter specified for the full 1S discharge range, including below the 3.50 V warning point.")
 b.p("For a TP4056-type charger board, confirm B and OUT markings. The protected output follows pack voltage. <link href='https://www.toppwr.com/uploadfile/file/20240130/65b892bb04a3c.pdf' color='#00665B'>Charger datasheet</link> · <link href='https://www.mantech.co.za/Datasheets/Products/xl6009.pdf' color='#00665B'>XL6009 specifications</link>", small=True)
@@ -410,7 +410,7 @@ b.table(["Part", "Connection"], [
     ["Small passive piezo", "GPIO18 to piezo +; piezo - to GND. Use a part suitable for 3.3 V drive."],
 ], [105, b.body_width - 105])
 b.table(["State", "LED / sound"], [
-    ["Searching", "Short flash about once a second; periodic search tone."],
+    ["Searching", "Short flash about once a second; periodic search tone. After a minute out of range: brief flash about every 3 seconds."],
     ["Receiver heard", "Solid light; one short beep on connection."],
     ["Link lost", "Rapid flash; two short beeps on loss."],
     ["Receiver selected", "One to four flashes identify the saved receiver number."],
@@ -433,7 +433,7 @@ b.note("Turn Web Run and Power off and release all buttons before changing assig
 
 b.start("Solve a problem.")
 b.table(["What you see", "Check this"], [
-    ["Handheld stops", "Disconnect phone Wi-Fi. Release all buttons. Check selected receiver and Stop latch. Power both boards nearby for diagnostics."],
+    ["Handheld stops", "Disconnect phone Wi-Fi. Tap Power, release all buttons, then press a direction. Check selection and Stop latch. Read reset reason over USB; check stable 5 V."],
     ["Stop remains latched", "Release all buttons. Hold Power + Emergency Stop for 3 seconds, then release both. Start a new direction press."],
     ["Wi-Fi has no internet", "Stay connected and type http://192.168.4.1/. Reload when changing between receiver and handheld setup Wi-Fi."],
     ["USB board gives no reply", "Check the cable and selected port. Close other serial apps. Release BOOT, tap EN/RESET, then retry."],
@@ -464,7 +464,7 @@ b.record("Handheld station MAC")
 b.record("Receiver Wi-Fi name")
 b.record("Power timeout / direction control")
 b.table(["Master order", "Receiver label / station MAC"], [[str(i), " "] for i in range(1, 5)], [90, b.body_width - 90])
-b.p("<b>Remember</b><br/>Power hold 3 s. Reset = Power + Stop hold 3 s, then release.<br/>Next receiver = tap Power, release, hold 2 s, release.<br/>Handheld setup = hold Power for 3 s at startup.", small=True)
+b.p("<b>Remember</b><br/>Power hold 3 s. Reset = Power + Stop hold 3 s, then release.<br/>Next receiver = tap Power, release, hold 2 s, release.<br/>Wake search = tap Power. Setup = Stop alone 8 s, then release.", small=True)
 b.p("Help and downloads<br/><link href='https://thecraneproject.vercel.app/guide.html' color='#00665B'>thecraneproject.vercel.app/guide.html</link>", small=True)
 b.save()
 

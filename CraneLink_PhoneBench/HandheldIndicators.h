@@ -6,6 +6,7 @@ public:
   void begin() {
     pinMode(ledPin, OUTPUT);
     digitalWrite(ledPin, LOW);
+    ledReady_ = ledcAttach(ledPin, 1000, 8);
     pinMode(buzzerPin, OUTPUT);
     digitalWrite(buzzerPin, LOW);
     buzzerReady_ = ledcAttach(buzzerPin, 2200, 8);
@@ -18,7 +19,7 @@ public:
     linked_ = heard_ = false;
   }
 
-  void update(uint32_t now, bool paired, bool linked, bool batteryEnabled, bool setupWifi = false) {
+  void update(uint32_t now, bool paired, bool linked, bool batteryEnabled, bool setupWifi = false, bool resting = false) {
     if (batteryEnabled && uint32_t(now - measuredAt_) >= 250) {
       measuredAt_ = now;
       uint32_t total = 0;
@@ -34,7 +35,7 @@ public:
           samples_ = 0;
         }
       } else if (batteryMv_ >= 3650 && low_) {
-        if (++samples_ >= 5) low_ = false;
+        if (++samples_ >= 5) { low_ = false; samples_ = 0; }
       } else samples_ = 0;
     }
     if (!batteryEnabled) {
@@ -61,8 +62,10 @@ public:
     if (low_ && now % 1600 < 600) led = now % 200 < 100;
     if (selection_) led = selected < uint32_t(selection_) * 300 && selected % 300 < 125;
     if (setupWifi && !low_) led = now % 1500 < 400 && now % 200 < 90;
-    digitalWrite(ledPin, led ? HIGH : LOW);
-    const bool searchSound = paired && !linked && !heard_ && !selection_ && now % 10000 < 240;
+    if (resting && !low_) led = now % 3000 < 80;
+    if (ledReady_) ledcWrite(ledPin, led ? 48 : 0);
+    else digitalWrite(ledPin, led ? HIGH : LOW);
+    const bool searchSound = paired && !linked && !heard_ && !selection_ && !resting && now % 10000 < 240;
     const bool sounding = low_ ? alarm < 540 && alarm % 180 < 80 :
                           searchSound || (chirp_ && chirp < (linked ? 110u : 360u) && chirp % 180 < 100);
     if (buzzerReady_ && sounding != sounding_) {
@@ -79,5 +82,5 @@ private:
   static constexpr uint8_t ledPin = 23, buzzerPin = 18, batteryPin = 34;
   uint32_t measuredAt_ = 0, selectedAt_ = 0, alarmAt_ = 0, chirpAt_ = 0, batteryMv_ = 0;
   uint8_t selection_ = 0, samples_ = 0;
-  bool heard_ = false, linked_ = false, chirp_ = false, sounding_ = false, low_ = false, buzzerReady_ = false;
+  bool heard_ = false, linked_ = false, chirp_ = false, sounding_ = false, low_ = false, buzzerReady_ = false, ledReady_ = false;
 };

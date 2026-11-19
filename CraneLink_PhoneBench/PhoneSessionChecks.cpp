@@ -2,6 +2,7 @@
 #include "AuxLatch.h"
 #include "StopResetGesture.h"
 #include "ReceiverSelectGesture.h"
+#include "SenderRadioRecovery.h"
 
 namespace {
 constexpr bool ownerAndExpiry() {
@@ -124,4 +125,50 @@ constexpr bool powerAndSelectionAreDistinct() {
 }
 
 static_assert(powerAndSelectionAreDistinct(), "A normal Power hold stays available and Stop cancels selection.");
+
+constexpr bool recoveryAcrossRollover() {
+  SenderRadioRecovery radio;
+  const uint32_t start = UINT32_MAX - 1000;
+  radio.begin(start);
+  if (radio.linked(start) || radio.retry(start + 2999) || !radio.retry(start + 3000)) return false;
+  radio.heard(start + 500);
+  if (!radio.linked(start + 1149) || radio.linked(start + 1150)) return false;
+  radio.attempted(start + 59700);
+  if (radio.rest(start + 60499) || !radio.rest(start + 60500)) return false;
+  radio.activity(start + 60500);
+  if (radio.rest(start + 65499) || !radio.rest(start + 65500)) return false;
+  radio.suspend(start + 65500);
+  return !radio.probe(start + 67699) && radio.probe(start + 67700);
+}
+
+constexpr bool connectedForFullDay() {
+  SenderRadioRecovery radio;
+  radio.begin(0);
+  for (uint32_t now = 0; now < 24u * 60u * 60u * 1000u; now += 1000) {
+    radio.heard(now);
+    if (!radio.linked(now) || radio.retry(now) || radio.rest(now)) return false;
+  }
+  return true;
+}
+
+constexpr bool overnightSearchResumes() {
+  SenderRadioRecovery radio;
+  radio.begin(0);
+  radio.attempted(60000);
+  for (uint32_t now = 60800; now < 12u * 60u * 60u * 1000u; now += 3000) {
+    if (!radio.rest(now)) return false;
+    radio.suspend(now);
+    if (radio.probe(now + 2199) || !radio.probe(now + 2200)) return false;
+    radio.attempted(now + 2200);
+  }
+  const uint32_t returned = 13u * 60u * 60u * 1000u;
+  radio.heard(returned);
+  if (!radio.linked(returned) || radio.rest(returned) || radio.retry(returned)) return false;
+  radio.lost();
+  return !radio.linked(returned);
+}
+
+static_assert(recoveryAcrossRollover(), "Radio leases and retries must survive millis rollover.");
+static_assert(connectedForFullDay(), "An idle connected handheld must not suspend its radio.");
+static_assert(overnightSearchResumes(), "An out-of-range handheld must keep searching and accept a returning receiver.");
 }

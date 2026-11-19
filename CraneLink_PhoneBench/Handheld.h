@@ -11,6 +11,7 @@
 #include "ReceiverSelectGesture.h"
 #include "HandheldIndicators.h"
 #include "MasterSetupPage.h"
+#include "SenderRadioRecovery.h"
 
 class Handheld {
 public:
@@ -31,50 +32,49 @@ public:
       batteryEnabled_ = storage_.getBool("battery", false);
     }
     memcpy(stationMac_, setup_.local[0] ? setup_.local : mac, sizeof(stationMac_));
-    const bool macReady = !setup_.local[0] || esp_iface_mac_addr_set(setup_.local, ESP_MAC_WIFI_STA) == ESP_OK;
-    setupMode_ = setupRequestedAtBoot();
-    const bool wifiReady = WiFi.mode(setupMode_ ? WIFI_AP : WIFI_STA);
-    if (wifiReady) {
-      uint8_t factory[6]{};
-      esp_efuse_mac_get_default(factory);
-      loadSetupNetwork(factory);
-    }
-    if (setupMode_) {
-      if (wifiReady && macReady) startSetupPortal();
-      if (!portalReady_) {
-        WiFi.mode(WIFI_OFF);
-        Serial.println("Handheld Wi-Fi setup could not start. Power cycle and try again.");
-      }
-      return;
-    }
-    ready_ = macReady && wifiReady && WiFi.setSleep(false) &&
-             esp_wifi_set_channel(radioChannel, WIFI_SECOND_CHAN_NONE) == ESP_OK && link_.begin();
-    if (!ready_) {
-      Serial.println("ESP-NOW failed to start.");
-      return;
-    }
-    activate(0, millis());
+    // Keep the radio fully awake while linked; reduce CPU power, not radio range.
+    setCpuFrequencyMhz(80);
+    uint8_t factory[6]{};
+    esp_efuse_mac_get_default(factory);
+    loadSetupNetwork(factory);
+    recovery_.begin(millis());
+    if (setupRequestedAtBoot()) enterSetup(millis());
+    else startRadio(millis());
+    if (!setupMode_ && setup_.count > 1) indicators_.select(selected_ + 1, millis());
     showInfo();
   }
 
   void loop() {
     serial_.poll([&](String line) { processLine(line); });
-    const uint32_t now = millis();
+    uint32_t now = millis();
+    const uint8_t previousRaw = lastRaw_;
     const uint8_t raw = readButtons(now);
+    if (raw) recovery_.activity(now);
     if (setupMode_) {
       indicators_.update(now, false, false, batteryEnabled_, portalReady_);
-      if (restartPending_ && uint32_t(now - restartRequestedAt_) >= 250) ESP.restart();
+      if (!raw) setupReleased_ = true;
+      if (setupReleased_ && raw == 64) setupExitPressed_ = true;
+      if ((!raw && setupExitPressed_) ||
+          (restartPending_ && uint32_t(now - restartRequestedAt_) >= 250) ||
+          uint32_t(now - lastSetupUse_) >= (portalReady_ ? 15u * 60u * 1000u : 3000u)) {
+        exitSetup(now);
+        return;
+      }
       if (portalReady_) {
         portal_.handleClient();
-        if (uint32_t(now - lastSetupUse_) >= 15u * 60u * 1000u) {
-          portal_.stop();
-          WiFi.mode(WIFI_OFF);
-          portalReady_ = false;
-        }
       }
       return;
     }
-    indicators_.update(now, setup_.count != 0, nonce_ != 0 && !switching_, batteryEnabled_);
+    // Stop reaches the receiver immediately. Holding Stop alone for eight seconds,
+    // then releasing, also opens setup without requiring a physical power switch.
+    if (raw == stopCommand) {
+      if (!stopSetupHeld_) { stopSetupHeld_ = true; stopSetupAt_ = now; }
+      if (uint32_t(now - stopSetupAt_) >= 8000) setupArmed_ = true;
+    } else {
+      stopSetupHeld_ = false;
+      if (!raw && setupArmed_) { enterSetup(now); return; }
+      if (raw) setupArmed_ = false;
+    }
     const uint8_t selectionButtons = (filtered_ & 64) | (raw & ~uint8_t(64));
     const auto gesture = setup_.count > 1 ? selectGesture_.update(selectionButtons, now) : ReceiverSelectGesture::normal;
     if (gesture == ReceiverSelectGesture::selectNext && raw == 64) {
@@ -86,21 +86,19 @@ public:
       switching_ = false;
       activate((selected_ + 1) % setup_.count, now);
     }
-    if (ready_ && setup_.count && !link_.paired() && uint32_t(now - lastPeerAttempt_) >= 1000)
-      activate(selected_, now, false);
-    if (nonce_ && uint32_t(now - lastBeacon_) >= 650) {
-      nonce_ = 0;
-      needNeutral_ = true;
-      neutralSince_ = now;
-      resetGesture_.requireRelease();
+    if (nonce_ && !recovery_.linked(now)) {
+      clearSession(now);
       Serial.println("Receiver link lost.");
     }
+    const bool wakePress = raw && !previousRaw && !recovery_.linked(now);
+    if ((radioResting_ && (raw || recovery_.probe(now))) || wakePress ||
+        (!radioResting_ && recovery_.retry(now))) startRadio(now);
     ReceivedFrame item;
     for (int n = 0; n < 8 && link_.next(item); ++n) {
       const RadioFrame& frame = item.frame;
       if (!frame.nonce || frame.sequence || frame.command) continue;
       if (!nonce_) Serial.println("Receiver link found.");
-      lastBeacon_ = millis();
+      recovery_.heard(item.arrived);
       if (nonce_ != frame.nonce) {
         nonce_ = frame.nonce;
         if (sequenceNonce_ != nonce_) {
@@ -112,18 +110,89 @@ public:
         resetGesture_.requireRelease();
       }
     }
-    if (!nonce_) return;
+    // Radio start/stop may block briefly; never compare a callback timestamp with
+    // an older loop timestamp (which would look like rollover to unsigned math).
+    now = millis();
+    if (!raw && !switching_ && !radioResting_ && recovery_.rest(now)) {
+      stopRadio(now);
+      radioResting_ = true;
+      recovery_.suspend(now);
+    }
+    indicators_.update(now, setup_.count != 0, nonce_ != 0 && !switching_, batteryEnabled_, false, radioResting_);
+    if (!nonce_ || !ready_) return;
     uint8_t next = command(raw, now);
     if (switching_) next = waitingForRelease;
     else if (gesture != ReceiverSelectGesture::normal && next < stopCommand) next &= ~uint8_t(64);
-    if (!sequence_ || next != sent_ || uint32_t(now - lastSend_) >= 65) {
+    const uint32_t interval = next == 0 ? 125 : 65;
+    if (!sequence_ || next != sent_ || uint32_t(now - lastSend_) >= interval) {
+      // Never wrap a sequence into a packet the receiver could mistake for a beacon.
+      if (sequence_ == UINT32_MAX) { startRadio(now); return; }
       sent_ = next;
       lastSend_ = now;
-      link_.send(nonce_, ++sequence_, next);
+      if (link_.send(nonce_, ++sequence_, next)) sendErrors_ = 0;
+      else if (++sendErrors_ >= 3) startRadio(now);
     }
   }
 
 private:
+  void clearSession(uint32_t now) {
+    nonce_ = 0;
+    needNeutral_ = true;
+    neutralSince_ = now;
+    resetGesture_.requireRelease();
+  }
+
+  void stopRadio(uint32_t now) {
+    // Deliberately stop renewing the receiver's lease during radio recovery.
+    link_.end();
+    ready_ = false;
+    clearSession(now);
+    WiFi.mode(WIFI_OFF);
+  }
+
+  void startRadio(uint32_t now) {
+    stopRadio(now);
+    radioResting_ = false;
+    recovery_.lost();
+    ++radioStarts_;
+    const bool macReady = !setup_.local[0] ||
+                          esp_iface_mac_addr_set(setup_.local, ESP_MAC_WIFI_STA) == ESP_OK;
+    ready_ = macReady && WiFi.mode(WIFI_STA) && WiFi.setSleep(false) &&
+             esp_wifi_set_channel(radioChannel, WIFI_SECOND_CHAN_NONE) == ESP_OK && link_.begin();
+    if (ready_ && setup_.count) {
+      activate(selected_, now, false, false);
+      ready_ = link_.paired();
+    }
+    if (!ready_) {
+      link_.end();
+      WiFi.mode(WIFI_OFF);
+      Serial.println("ESP-NOW unavailable. Retrying automatically.");
+    }
+    recovery_.attempted(millis());
+  }
+
+  void enterSetup(uint32_t now) {
+    if (nonce_ && sequence_ != UINT32_MAX) link_.send(nonce_, ++sequence_, stopCommand);
+    stopRadio(now);
+    setupMode_ = true;
+    switching_ = setupArmed_ = stopSetupHeld_ = false;
+    setupReleased_ = setupExitPressed_ = restartPending_ = false;
+    selectGesture_ = ReceiverSelectGesture{};
+    lastSetupUse_ = now;
+    if (WiFi.mode(WIFI_AP)) startSetupPortal();
+    if (!portalReady_) Serial.println("Setup Wi-Fi unavailable. Returning to radio automatically.");
+  }
+
+  void exitSetup(uint32_t now) {
+    portal_.stop();
+    portalReady_ = setupMode_ = restartPending_ = false;
+    setupExitPressed_ = setupArmed_ = false;
+    recovery_.begin(now);
+    selectGesture_ = ReceiverSelectGesture{};
+    startRadio(now);
+    Serial.println("Handheld returned to ESP-NOW. Release all buttons before operating.");
+  }
+
   struct SenderSetup {
     PeerSettings peer;
     uint8_t local[6]{};
@@ -202,7 +271,7 @@ private:
     page += String(F("<form method=\"post\" action=\"/receiver\">")) + nonceField;
     page += FPSTR(masterSetupFields);
     page += String(F("<form method=\"post\" action=\"/restart\">")) + nonceField;
-    page += F("<button type=\"submit\">Finish and restart handheld</button></form></main></html>");
+    page += F("<button type=\"submit\">Finish and return to radio</button></form><p>You can also tap and release Power to return to radio. Setup ends after 15 minutes without use.</p></main></html>");
     portal_.sendHeader("Cache-Control", "no-store");
     portal_.sendHeader("Content-Security-Policy", "default-src 'none'; style-src 'unsafe-inline'; form-action 'self'; frame-ancestors 'none'");
     portal_.send(code, "text/html; charset=utf-8", page);
@@ -252,6 +321,7 @@ private:
       return;
     }
     setupNonce_ = randomHex();
+    if (!portalRoutesAdded_) {
     portal_.on("/", HTTP_GET, [this] {
       lastSetupUse_ = millis();
       sendSetupPage();
@@ -264,10 +334,12 @@ private:
         return;
       }
       portal_.sendHeader("Cache-Control", "no-store");
-      portal_.send(200, "text/plain", "Restarting the handheld. Disconnect your phone from the receiver Wi-Fi before using the handheld.");
+      portal_.send(200, "text/plain", "Returning to radio. Disconnect your phone from receiver Wi-Fi, release all buttons and reset Emergency Stop before operating.");
       restartPending_ = true;
       restartRequestedAt_ = millis();
     });
+    portalRoutesAdded_ = true;
+    }
     portal_.begin();
     lastSetupUse_ = millis();
     portalReady_ = true;
@@ -288,9 +360,10 @@ private:
     setup_.count = old.peer.configured() ? 1 : 0;
   }
 
-  void activate(uint8_t slot, uint32_t now, bool show = true) {
+  void activate(uint8_t slot, uint32_t now, bool show = true, bool newSearch = true) {
     selected_ = slot;
-    lastPeerAttempt_ = now;
+    if (newSearch) recovery_.begin(now);
+    sendErrors_ = 0;
     nonce_ = sequenceNonce_ = 0;
     sequence_ = 0;
     needNeutral_ = true;
@@ -346,6 +419,7 @@ private:
       return;
     }
     if (line == "targets-save" && expectedTargets_ && pending_.count == expectedTargets_) {
+      if (!ready_ && !setupMode_) startRadio(millis());
       if (!ready_ || readButtons(millis()) || switching_) {
         Serial.println("CL ERROR Release all sender buttons and retry.");
         return;
@@ -393,6 +467,7 @@ private:
 
   void processLine(String line) {
     line.trim();
+    recovery_.activity(millis());
     if (line == "info") {
       showInfo();
       return;
@@ -406,6 +481,10 @@ private:
     if (line == "setup-info") {
       Serial.printf("CL PROTOCOL %u\n", unsigned(wireVersion));
       Serial.println("CL FEATURES MASTER BATTERY WIRELESS");
+      Serial.printf("CL HEALTH %u %lu %lu %u %u %lu\n", unsigned(esp_reset_reason()),
+                    static_cast<unsigned long>(millis() / 1000),
+                    static_cast<unsigned long>(radioStarts_), unsigned(radioResting_),
+                    unsigned(setupMode_), static_cast<unsigned long>(ESP.getFreeHeap()));
       if (setupPassword_.length())
         Serial.printf("CL SETUP AP %s %s 192.168.4.1 %u\n", setupSsid_.c_str(), setupPassword_.c_str(), unsigned(portalReady_));
       Serial.printf("CL BATTERY %u %lu %u\n", unsigned(batteryEnabled_),
@@ -451,7 +530,8 @@ private:
       Serial.println("Enter the receiver MAC, which must differ from this sender MAC.");
       return;
     }
-    if (!ready_) {
+    if (!ready_ && !setupMode_) startRadio(millis());
+    if (!ready_ || setupMode_) {
       Serial.println("CL ERROR radio unavailable");
       return;
     }
@@ -486,19 +566,24 @@ private:
   String setupSsid_, setupPassword_, setupNonce_;
   uint8_t stationMac_[6]{};
   uint32_t lastSetupUse_ = 0, restartRequestedAt_ = 0;
-  bool setupMode_ = false, portalReady_ = false, restartPending_ = false;
+  bool setupMode_ = false, portalReady_ = false, restartPending_ = false, portalRoutesAdded_ = false;
+  bool setupReleased_ = false, setupExitPressed_ = false, setupArmed_ = false, stopSetupHeld_ = false;
+  uint32_t stopSetupAt_ = 0, radioStarts_ = 0;
+  bool radioResting_ = false;
+  uint8_t sendErrors_ = 0;
+  SenderRadioRecovery recovery_;
   TargetSetup setup_, pending_;
   HandheldIndicators indicators_;
   ReceiverSelectGesture selectGesture_;
   uint8_t selected_ = 0, expectedTargets_ = 0;
-  uint32_t lastPeerAttempt_ = 0, switchStarted_ = 0;
+  uint32_t switchStarted_ = 0;
   bool switching_ = false, batteryEnabled_ = false;
   bool ready_ = false;
   bool storageReady_ = false;
   bool needNeutral_ = true;
   uint64_t nonce_ = 0;
   uint64_t sequenceNonce_ = 0;
-  uint32_t sequence_ = 0, lastBeacon_ = 0, lastSend_ = 0, neutralSince_ = 0;
+  uint32_t sequence_ = 0, lastSend_ = 0, neutralSince_ = 0;
   uint32_t changed_[8]{};
   uint8_t lastRaw_ = 0, filtered_ = 0, sent_ = 0;
   SerialLine serial_;

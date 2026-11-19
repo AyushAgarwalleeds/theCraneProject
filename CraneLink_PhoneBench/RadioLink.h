@@ -7,6 +7,7 @@
 #include <freertos/queue.h>
 #include <mbedtls/md.h>
 #include <stddef.h>
+#include <atomic>
 
 constexpr uint8_t radioChannel = 6;
 constexpr uint8_t stopCommand = 128;
@@ -94,8 +95,22 @@ public:
         esp_now_init() != ESP_OK) return false;
     instance_ = this;
     started_ = esp_now_register_recv_cb(receive) == ESP_OK;
-    if (!started_) esp_now_deinit();
+    if (!started_) {
+      instance_ = nullptr;
+      esp_now_deinit();
+    }
     return started_;
+  }
+
+  void end() {
+    if (instance_.load() == this) instance_.store(nullptr);
+    if (started_) {
+      esp_now_unregister_recv_cb();
+      esp_now_deinit();
+    }
+    started_ = false;
+    for (auto& peer : peers_) peer = PeerSettings{};
+    if (queue_) xQueueReset(queue_);
   }
 
   bool setPeer(const PeerSettings& settings, int slot = 0) {
@@ -134,14 +149,14 @@ public:
     return false;
   }
 
-  void send(uint64_t nonce, uint32_t sequence, uint8_t command, int slot = 0) {
-    if (!paired(slot)) return;
+  bool send(uint64_t nonce, uint32_t sequence, uint8_t command, int slot = 0) {
+    if (!paired(slot)) return false;
     const PeerSettings& peer = peers_[slot];
     RadioFrame packet{nonce, sequence, command, wireVersion, 0, {}};
     uint8_t digest[32];
-    if (!sign(packet, peer, digest)) return;
+    if (!sign(packet, peer, digest)) return false;
     memcpy(packet.authenticator, digest, sizeof(packet.authenticator));
-    esp_now_send(peer.mac, reinterpret_cast<const uint8_t*>(&packet), sizeof(packet));
+    return esp_now_send(peer.mac, reinterpret_cast<const uint8_t*>(&packet), sizeof(packet)) == ESP_OK;
   }
 
 private:
@@ -162,16 +177,17 @@ private:
   }
 
   static void receive(const esp_now_recv_info_t* info, const uint8_t* data, int len) {
-    if (!instance_ || len != sizeof(RadioFrame) || !info->des_addr ||
-        memcmp(info->des_addr, instance_->ownMac_, sizeof(instance_->ownMac_))) return;
+    RadioLink* self = instance_.load();
+    if (!self || len != sizeof(RadioFrame) || !info->des_addr ||
+        memcmp(info->des_addr, self->ownMac_, sizeof(self->ownMac_))) return;
     ReceivedFrame item{};
     memcpy(item.mac, info->src_addr, sizeof(item.mac));
     memcpy(&item.frame, data, sizeof(item.frame));
     item.arrived = millis();
-    xQueueSend(instance_->queue_, &item, 0);
+    xQueueSend(self->queue_, &item, 0);
   }
 
-  inline static RadioLink* instance_ = nullptr;
+  inline static std::atomic<RadioLink*> instance_{nullptr};
   QueueHandle_t queue_ = nullptr;
   uint8_t ownMac_[6]{};
   PeerSettings peers_[maxSenders];

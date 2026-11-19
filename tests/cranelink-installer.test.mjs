@@ -2,7 +2,7 @@ import assert from 'node:assert/strict';
 import {readFileSync} from 'node:fs';
 import test from 'node:test';
 import {createContext, runInContext} from 'node:vm';
-import {acknowledge, FirmwareUpdateRequired, identify, readBoardInfo, withBoard} from '../docs/serial.mjs';
+import {acknowledge, FirmwareUpdateRequired, identify, probeRole, readBoardInfo, withBoard} from '../docs/serial.mjs';
 import {buildReport} from '../docs/report.mjs';
 import {PDFDocument} from '../docs/vendor/pdf-lib.mjs';
 
@@ -48,12 +48,19 @@ test('USB diagnostics distinguish a saved peer from a live link and report groun
     ? ['CL IDENT SENDER 02:06:1C:00:00:02 10:06:1C:00:00:02\n']
     : ['CL FEATURES MASTER BATTERY WIRELESS\n',
        'CL SETUP AP CraneLink-TX-10061C000002 1234567890ABCDEF12345678 192.168.4.1 0\n',
+       'CL HEALTH 9 43200 18 1 0 172800\n',
        'CL TARGET 10:06:1C:00:00:01 6 1 0\nCL INPUTS 81\nCL INFO DONE\n']);
   const info = await withBoard(port, async command => readBoardInfo(command, await identify(command)));
   assert.equal(info.ready, true);
   assert.equal(info.linked, false);
   assert.equal(info.inputs, 0x81);
   assert.equal(info.wirelessEditable, true);
+  assert.equal(info.resetReason, 9);
+  assert.equal(info.uptime, 43200);
+  assert.equal(info.radioStarts, 18);
+  assert.equal(info.radioResting, true);
+  assert.equal(info.setupMode, false);
+  assert.equal(info.freeHeap, 172800);
   assert.deepEqual(info.setupAp, {ssid:'CraneLink-TX-10061C000002', password:'1234567890ABCDEF12345678',
     ip:'192.168.4.1', active:false});
 });
@@ -154,4 +161,30 @@ test('the post-upload serial session pulses reset with BOOT released before iden
   });
   const board = await withBoard(port, command => identify(command), {restart:true});
   assert.equal(board.role, 'receiver');
+});
+
+test('firmware-only updates keep saved identities and never send pairing or network commands', async () => {
+  for (const role of ['sender', 'receiver']) {
+    const commands = [], flashes = [];
+    const port = usbDevice(line => {
+      commands.push(line);
+      if (line === 'identify') return [`CL IDENT ${role.toUpperCase()} 02:00:00:00:00:01 10:00:00:00:00:01\n`];
+      return ['CL PROTOCOL 4\nCL INFO DONE\n'];
+    });
+    const element = () => ({addEventListener() {}, classList:{toggle() {}}});
+    const ctx = createContext({acknowledge, FirmwareUpdateRequired, identify, probeRole, readBoardInfo, withBoard,
+      document:{getElementById:element}, supported:true,
+      mockFlash:async (_, kind, options) => { flashes.push([kind, options.exclude]); return '10:00:00:00:00:01'; },
+      port, role});
+    const script = readFileSync(new URL('../docs/setup.js', import.meta.url), 'utf8').replace(/^import .*;\r?\n/gm, '');
+    runInContext(script, ctx);
+    runInContext('flash = mockFlash', ctx);
+    const board = await runInContext('updateExistingBoard(port, role, {}, () => {})', ctx);
+    assert.equal(board.mac, '02:00:00:00:00:01');
+    assert.deepEqual(flashes, [[role, null]]);
+    assert.deepEqual(commands, ['identify', 'identify', 'setup-info']);
+    await assert.rejects(runInContext("updateExistingBoard(port, role === 'sender' ? 'receiver' : 'sender', {}, () => {})", ctx),
+      /Connect the .* selected for this update/);
+    assert.equal(flashes.length, 1);
+  }
 });

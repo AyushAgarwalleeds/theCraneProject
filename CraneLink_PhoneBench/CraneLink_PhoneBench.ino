@@ -6,14 +6,18 @@
 #else
 
 #include "BuildRole.h"
+#include "RuntimeWatchdog.h"
 
 #if CRANELINK_SENDER
 #include "Handheld.h"
 Handheld handheld;
-void setup() { handheld.begin(); }
+void setup() {
+  handheld.begin();
+  startRuntimeWatchdog();
+}
 void loop() {
   handheld.loop();
-  delay(1);
+  delay(5);
 }
 #else
 
@@ -47,6 +51,7 @@ uint32_t lastPhoneCheck = 0;
 uint8_t receiverMac[6]{};
 RadioLink radio;
 bool radioReady = false;
+uint8_t radioSendErrors = 0;
 SerialLine serialLine;
 struct RadioSession {
   uint64_t nonce = 0;
@@ -253,8 +258,21 @@ void tickRadio() {
   }
   if (uint32_t(millis() - lastBeacon) >= 100) {
     lastBeacon = millis();
-    for (int slot = 0; slot < maxSenders; ++slot)
-      radio.send(radioSessions[slot].nonce, 0, 0, slot);
+    bool failed = false;
+    for (int slot = 0; slot < maxSenders; ++slot) {
+      if (radio.paired(slot) && !radio.send(radioSessions[slot].nonce, 0, 0, slot)) failed = true;
+    }
+    radioSendErrors = failed ? radioSendErrors + 1 : 0;
+    if (radioSendErrors >= 5) {
+      // Recover ESP-NOW without taking down the phone access point. This is an
+      // immediate API error, not an absent/out-of-range handheld.
+      for (int slot = 0; slot < maxSenders; ++slot) resetRadioSession(slot);
+      radio.end();
+      radioReady = false;
+      radioSendErrors = 0;
+      lastRadioAttempt = millis();
+      Serial.println("Restarting unavailable ESP-NOW radio. Phone Wi-Fi remains active.");
+    }
   }
 }
 
@@ -566,6 +584,7 @@ void handleEnd() {
 
 void tryRadio() {
   lastRadioAttempt = millis();
+  radioSendErrors = 0;
   radioReady = (WiFi.channel() == radioChannel ||
                 esp_wifi_set_channel(radioChannel, WIFI_SECOND_CHAN_NONE) == ESP_OK) && radio.begin();
   if (!radioReady) {
@@ -579,6 +598,7 @@ void tryRadio() {
     }
     resetRadioSession(slot);
   }
+  if (!radioReady) radio.end();
 }
 
 void startAp() {
@@ -693,6 +713,7 @@ void setup() {
   });
   startAp();
   tryRadio();
+  startRuntimeWatchdog();
 }
 
 void loop() {

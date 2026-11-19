@@ -160,6 +160,14 @@ export async function readBoardInfo(command, identity) {
       result.uptime = Number(fields[1]);
       result.clients = Number(fields[2]);
     }
+    if (kind === 'HEALTH' && fields.length === 6) {
+      result.resetReason = Number(fields[0]);
+      result.uptime = Number(fields[1]);
+      result.radioStarts = Number(fields[2]);
+      result.radioResting = fields[3] === '1';
+      result.setupMode = fields[4] === '1';
+      result.freeHeap = Number(fields[5]);
+    }
     if (kind === 'SLOT' && fields[1] !== '-')
       result.slots.push({slot:Number(fields[0]), mac:fields[1], linked:fields[2] === '1'});
     if (kind === 'TARGET') {

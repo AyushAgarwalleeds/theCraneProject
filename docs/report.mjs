@@ -19,16 +19,15 @@ function reportSections(installed, checked) {
       ['Radio channel', board.channel || 'Unavailable'],
       ['Radio protocol', board.protocol ?? 'Older firmware'],
     ];
+    if (board.resetReason !== undefined)
+      rows.push(['Last reset', resets[board.resetReason] || 'Code ' + board.resetReason],
+        ['Uptime when read', board.uptime + ' seconds']);
     if (board.role === 'receiver') {
       rows.push(['Wi-Fi network', board.ssid || 'Access point unavailable']);
       rows.push(['ESP-NOW', board.ready ? 'Ready' : 'Unavailable']);
       if (board.password) rows.push(['Wi-Fi password', board.password]);
       if (board.ip) rows.push(['Phone controls', 'http://' + board.ip + '/']);
       if (board.clients !== undefined) rows.push(['Connected phones', board.clients]);
-      if (board.resetReason !== undefined) {
-        rows.push(['Last reset', resets[board.resetReason] || 'Code ' + board.resetReason],
-          ['Uptime when read', board.uptime + ' seconds']);
-      }
       if (board.stopped) rows.push(['Emergency Stop', 'Latched']);
       if (board.clients) rows.push(['Control owner', 'Phone Wi-Fi - disconnect to use the handheld']);
       for (const slot of board.slots)
@@ -37,11 +36,15 @@ function reportSections(installed, checked) {
       if (board.setupAp) {
         rows.push(['Setup Wi-Fi name', board.setupAp.ssid], ['Setup Wi-Fi password', board.setupAp.password],
           ['Setup address', 'http://' + board.setupAp.ip + '/'],
-          ['Setup mode', board.setupAp.active ? 'Wi-Fi setup active' : 'Hold Power for 3 seconds at startup']);
+          ['Setup mode', board.setupAp.active ? 'Wi-Fi setup active' : 'Hold Stop alone for 8 seconds, then release']);
       }
       rows.push(['Paired receiver MAC', board.target === '-' ? 'Unpaired' : board.target]);
       rows.push(['Radio link when read', !board.ready ? 'Unavailable or unpaired' :
         board.linked ? 'Receiver heard' : 'Waiting for receiver']);
+      if (board.radioStarts !== undefined)
+        rows.push(['Radio recovery', board.setupMode ? 'Setup Wi-Fi active' :
+          board.radioResting ? 'Battery saving; tap Power to search now' : 'Automatic search enabled'],
+          ['Radio starts since boot', board.radioStarts], ['Free heap', board.freeHeap + ' bytes']);
       for (const target of board.targets ?? []) {
         const name = target.name === '-' ? target.mac : target.name;
         rows.push(['Receiver ' + target.slot, name + (target.selected ? ' (selected)' : '')]);

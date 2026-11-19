@@ -5,8 +5,8 @@
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <meta name="description" content="Install CraneLink, pair a master handheld with installed receivers, and check your boards.">
   <title>CraneLink USB Setup</title>
-  <link rel="stylesheet" href="setup.css?v=6">
-  <script type="module" src="setup.js?v=6"></script>
+  <link rel="stylesheet" href="setup.css?v=7">
+  <script type="module" src="setup.js?v=7"></script>
 </head>
 <body>
   <main>
@@ -48,14 +48,15 @@
     </div>
     <section id="wireless" class="panel" aria-labelledby="wirelessTitle">
       <h2 id="wirelessTitle">Wireless setup for installed receivers</h2>
-      <p>Connect only the master handheld by USB for its first update. The setup report shows its station MAC and private setup Wi-Fi password.</p>
+      <p>Update an existing board here to keep its saved pairings and settings. Connect one board by USB. The setup report shows its addresses, Wi-Fi and recovery status.</p>
       <button id="wirelessUpload" type="button">Update handheld firmware</button>
-      <progress id="wirelessProgress" max="100" value="0" hidden aria-label="Handheld firmware upload progress"></progress>
+      <button id="receiverUpdate" type="button" class="secondary">Update receiver firmware</button>
+      <progress id="wirelessProgress" max="100" value="0" hidden aria-label="Firmware upload progress"></progress>
       <p id="wirelessStatus" role="status"></p>
       <ol class="instructions">
         <li><strong>Register the handheld on each receiver.</strong> Join the receiver’s Wi-Fi and open <code>http://192.168.4.1/</code>. Open <strong>Settings and sender pairing</strong>, choose an empty sender slot, and enter the handheld’s station MAC. Generate a key. Keep the receiver station MAC and key available before tapping <strong>Save sender slot</strong>.</li>
-        <li><strong>Add that receiver on the handheld.</strong> Turn the handheld off. Hold Power while turning it on, keep holding for three seconds, then release. Join its <code>CraneLink-TX-…</code> Wi-Fi, open <code>http://192.168.4.1/</code>, and enter the receiver’s label, station MAC, and the same key.</li>
-        <li><strong>Repeat for the other receivers.</strong> The handheld keeps the saved entries in order. Tap <strong>Finish and restart handheld</strong> when done and disconnect your phone from the receiver Wi-Fi before using the handheld.</li>
+        <li><strong>Add that receiver on the handheld.</strong> Release all buttons. Hold Emergency Stop alone for eight seconds, then release to open handheld setup. Join its <code>CraneLink-TX-…</code> Wi-Fi, open <code>http://192.168.4.1/</code>, and enter the receiver’s label, station MAC, and the same key.</li>
+        <li><strong>Repeat for the other receivers.</strong> The handheld keeps the saved entries in order. Tap <strong>Finish and return to radio</strong> when done and disconnect your phone from receiver Wi-Fi. Reset Emergency Stop with Power + Stop for three seconds, then release both.</li>
       </ol>
     </section>
     <section id="master" class="panel" hidden>
