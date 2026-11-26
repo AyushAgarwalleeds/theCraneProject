@@ -1,6 +1,7 @@
 import {ESPLoader, Transport} from './vendor/esptool.js';
-import {acknowledge, FirmwareUpdateRequired, identify, probeRole, readBoardInfo, withBoard} from './serial.mjs?v=7';
-import {renderReport, downloadReport} from './report.mjs?v=7';
+import {acknowledge, FirmwareUpdateRequired, identify, probeRole, readBoardInfo, withBoard} from './serial.mjs?v=8';
+import {renderReport, downloadReport} from './report.mjs?v=8';
+import {firmwareImages} from './firmware/release-8.mjs';
 import {requestPort, supported, useAndroidUsb} from './usb.mjs?v=7';
 
 const parts = [
@@ -10,7 +11,7 @@ const parts = [
   ['app.bin', 0x10000],
 ];
 const radioProtocol = 4;
-const firmwareRelease = 7;
+const firmwareRelease = 8;
 const get = id => document.getElementById(id);
 const connect = get('connect');
 const configure = get('configure');
@@ -87,14 +88,17 @@ async function readFirmware(role) {
     const response = await fetch('./firmware/' + role + '/' + name + '?v=' + firmwareRelease, {cache:'no-store'});
     if (!response.ok) throw Error('Firmware file unavailable: ' + name);
     const data = new Uint8Array(await response.arrayBuffer());
-    if (!data.length || (name === 'app.bin' && data[0] !== 0xe9))
-      throw Error('Invalid firmware file: ' + name);
-    return {data, address};
+    const image = firmwareImages[role][name];
+    const digest = new Uint8Array(await crypto.subtle.digest('SHA-256', data));
+    const hash = Array.from(digest, byte => byte.toString(16).padStart(2, '0')).join('');
+    if (data.length !== image.bytes || hash !== image.sha256)
+      throw Error('Downloaded firmware does not match release ' + firmwareRelease + '. Reload the page and retry.');
+    return {data, address, name, md5:image.md5};
   }));
 }
 
 async function flash(port, role, options = {}) {
-  const {progressBar = progress, reportStatus = message, exclude = used} = options;
+  const {progressBar = progress, reportStatus = message, exclude = used, expectedFactory} = options;
   const fileArray = await readFirmware(role);
   const transport = new Transport(port, false);
   const loader = new ESPLoader({transport, baudrate:useAndroidUsb ? 115200 : 460800, romBaudrate:115200});
@@ -107,6 +111,8 @@ async function flash(port, role, options = {}) {
     if (!['4MB', '8MB', '16MB', '32MB', '64MB', '128MB'].includes(size))
       throw Error('Use an ESP32-WROOM with at least 4 MB flash. Detected: ' + (size || 'unknown'));
     const factory = (await loader.chip.readMac(loader)).toUpperCase();
+    if (expectedFactory && factory !== expectedFactory)
+      throw Error('The board on this port changed before upload. Reconnect the original board.');
     if (exclude?.has(factory)) throw Error('This board is already assigned. Unplug it and select the next board.');
     progressBar.hidden = false;
     progressBar.value = 0;
@@ -117,6 +123,12 @@ async function flash(port, role, options = {}) {
         reportStatus('Uploading ' + role + ' firmware… ' + Math.floor(progressBar.value) + '%');
       },
     });
+    reportStatus('Verifying the data written to flash…');
+    for (const image of fileArray) {
+      const digest = await loader.flashMd5sum(image.address, image.data.length);
+      if (digest.toLowerCase() !== image.md5)
+        throw Error('Flash verification failed for ' + image.name + '. Reconnect this board and repeat the upload.');
+    }
     return factory;
   } finally {
     try {
@@ -133,7 +145,7 @@ function serialSetup(port, role, factory, restart) {
     if (used.has(board.factory)) throw Error('This board was already assigned. Connect the next board.');
     // Check the firmware before writing any new pairing settings.
     const before = await readBoardInfo(command, board);
-    if (before.protocol !== radioProtocol) throw new FirmwareUpdateRequired();
+    if (before.protocol !== radioProtocol || before.release !== firmwareRelease) throw new FirmwareUpdateRequired();
     if (role === 'sender' && !before.masterEditable) throw new FirmwareUpdateRequired();
     if (role === 'receiver') {
       await acknowledge(command, 'peers-begin ' + plan.length, 'CL PEERS READY');
@@ -165,7 +177,10 @@ async function run(upload) {
   const role = step === 0 ? 'receiver' : 'sender';
   try {
     const port = await requestPort();
-    const factory = upload ? await flash(port, role) : installed;
+    if (upload) await guardInstallRole(port, role);
+    const factory = upload ? await flash(port, role, {
+      expectedFactory:typeof installed === 'string' ? installed : undefined
+    }) : installed;
     installed = factory || true;
     message('Saving pairing on the ' + role + '…');
     const board = await serialSetup(port, role, typeof factory === 'string' ? factory : undefined, upload);
@@ -314,21 +329,26 @@ get('masterCancel').addEventListener('click', () => {
   get('masterPlan').hidden = false;
 });
 
+async function guardInstallRole(port, role) {
+  const actual = await withBoard(port, probeRole);
+  if (actual && actual !== role)
+    throw Error('This board identifies as a ' + actual + '. Connect the ' + role + ' selected for this step.');
+}
+
 async function uploadHandheld(port, progressBar, reportStatus) {
-  if (await withBoard(port, probeRole) === 'receiver')
-    throw Error('This board identifies as a receiver. Connect your handheld to upload sender firmware.');
+  await guardInstallRole(port, 'sender');
   return flash(port, 'sender', {progressBar, reportStatus, exclude:null});
 }
 
 async function updateExistingBoard(port, role, progressBar, reportStatus) {
-  const actual = await withBoard(port, probeRole);
-  if (actual && actual !== role)
-    throw Error('This board identifies as a ' + actual + '. Connect the ' + role + ' selected for this update.');
+  const actual = await withBoard(port, command => identify(command));
+  if (actual.role !== role)
+    throw Error('This board identifies as a ' + actual.role + '. Connect the ' + role + ' selected for this update.');
   // Write firmware only. Do not issue pairing, network or erase commands.
-  const factory = await flash(port, role, {progressBar, reportStatus, exclude:null});
+  const factory = await flash(port, role, {progressBar, reportStatus, exclude:null, expectedFactory:actual.factory});
   const board = await withBoard(port, async command => readBoardInfo(command,
     await identify(command, role, factory)), {restart:true});
-  if (board.protocol !== radioProtocol)
+  if (board.protocol !== radioProtocol || board.release !== firmwareRelease)
     throw Error('The firmware version could not be verified. Check the connected board again.');
   return board;
 }
@@ -338,6 +358,7 @@ async function configureMaster(port, upload) {
     const factory = upload ? await uploadHandheld(port, get('masterProgress'), masterMessage) : undefined;
     const sender = await withBoard(port, async command => readBoardInfo(command,
       await identify(command, 'sender', factory)), {restart:upload});
+    if (upload && sender.release !== firmwareRelease) throw new FirmwareUpdateRequired();
     if (!sender.masterEditable) throw Error('Select Upload sender firmware to enable master setup.');
     if (sender.protocol !== radioProtocol) throw Error('The master sender firmware uses a different radio protocol. Upload the sender firmware from this page.');
     master.sender = sender;
@@ -351,6 +372,8 @@ async function configureMaster(port, upload) {
       const before = await readBoardInfo(command, identity);
       if (before.protocol !== radioProtocol || !before.ready)
         throw Error('This receiver must be running compatible CraneLink firmware with ESP-NOW ready.');
+      if (master.sender.release >= 8 && !(before.release >= 8))
+        throw Error('Update this receiver to release 8 before pairing it with this handheld. Its current firmware cannot acknowledge commands.');
       const occupied = before.slots.find(slot => slot.mac === master.sender.mac);
       const slot = occupied?.slot ?? [1, 2, 3, 4].find(number => !before.slots.some(slot => slot.slot === number));
       if (!slot) throw Error('All sender slots are taken. Free a slot on this receiver or choose another receiver.');
@@ -408,7 +431,7 @@ async function runMaster(upload = false) {
 get('masterConnect').addEventListener('click', () => void runMaster());
 get('masterUpload').addEventListener('click', () => void runMaster(true));
 
-async function runFirmwareUpdate(event, role) {
+async function runFirmwareUpdate(event, role, newHandheld = false) {
   const status = get('wirelessStatus');
   if (busy || readingInputs) {
     status.textContent = 'Finish the current USB operation first.';
@@ -420,7 +443,16 @@ async function runFirmwareUpdate(event, role) {
   status.textContent = 'Select the ' + role + ' USB port. Existing pairing settings will be kept.';
   try {
     const port = await requestPort();
-    const board = await updateExistingBoard(port, role, progressBar, text => { status.textContent = text; });
+    const showStatus = text => { status.textContent = text; };
+    let board;
+    if (newHandheld) {
+      const factory = await uploadHandheld(port, progressBar, showStatus);
+      board = await withBoard(port, async command => readBoardInfo(command,
+        await identify(command, role, factory)), {restart:true});
+      if (board.release !== firmwareRelease) throw new FirmwareUpdateRequired();
+    } else {
+      board = await updateExistingBoard(port, role, progressBar, showStatus);
+    }
     if (role === 'sender' && (!board.wirelessEditable || !board.setupAp))
       throw Error('Could not read the setup Wi-Fi credentials. Reconnect the handheld and check USB diagnostics.');
     observedBoards.set(board.factory, board);
@@ -438,6 +470,7 @@ async function runFirmwareUpdate(event, role) {
 }
 get('wirelessUpload').addEventListener('click', event => runFirmwareUpdate(event, 'sender'));
 get('receiverUpdate').addEventListener('click', event => runFirmwareUpdate(event, 'receiver'));
+get('newHandheld').addEventListener('click', event => runFirmwareUpdate(event, 'sender', true));
 
 get('batteryConfig').addEventListener('submit', async event => {
   event.preventDefault();
@@ -496,6 +529,7 @@ if (!supported) {
   get('masterPlan').querySelector('button').disabled = true;
   get('wirelessUpload').disabled = true;
   get('receiverUpdate').disabled = true;
+  get('newHandheld').disabled = true;
   get('batteryConfig').querySelector('button').disabled = true;
   const alert = get('compatibility');
   alert.hidden = false;

@@ -145,6 +145,11 @@ export async function readBoardInfo(command, identity) {
     if (kind === 'SETUP' && fields[0] === 'AP' && fields.length === 5)
       result.setupAp = {ssid:fields[1], password:fields[2], ip:fields[3], active:fields[4] === '1'};
     if (kind === 'PROTOCOL') result.protocol = Number(fields[0]);
+    if (kind === 'RELEASE') result.release = Number(fields[0]);
+    if (kind === 'RECEIPT') {
+      result.confirmed = fields[0] === '1';
+      result.stopPending = fields[1] === '1';
+    }
     if (kind === 'PICK') {
       result.targets ??= [];
       result.targets.push({slot:Number(fields[0]), mac:fields[1], name:fields[2], selected:fields[3] === '1'});

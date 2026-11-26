@@ -6,7 +6,7 @@
   <meta name="description" content="Install CraneLink, pair a master handheld with installed receivers, and check your boards.">
   <title>CraneLink USB Setup</title>
   <link rel="stylesheet" href="setup.css?v=7">
-  <script type="module" src="setup.js?v=7"></script>
+  <script type="module" src="setup.js?v=8"></script>
 </head>
 <body>
   <main>
@@ -48,9 +48,10 @@
     </div>
     <section id="wireless" class="panel" aria-labelledby="wirelessTitle">
       <h2 id="wirelessTitle">Wireless setup for installed receivers</h2>
-      <p>Update an existing board here to keep its saved pairings and settings. Connect one board by USB. The setup report shows its addresses, Wi-Fi and recovery status.</p>
-      <button id="wirelessUpload" type="button">Update handheld firmware</button>
-      <button id="receiverUpdate" type="button" class="secondary">Update receiver firmware</button>
+      <p>Update each receiver first, then its handhelds. The update keeps their saved settings. Release 8 handhelds require command receipts from a release 8 receiver. After every receiver restart, release all buttons, hold Power + Emergency Stop for three seconds, then release both.</p>
+      <button id="receiverUpdate" type="button">Update receiver firmware</button>
+      <button id="wirelessUpload" type="button" class="secondary">Update handheld firmware</button>
+      <button id="newHandheld" type="button" class="secondary">Install on a new handheld</button>
       <progress id="wirelessProgress" max="100" value="0" hidden aria-label="Firmware upload progress"></progress>
       <p id="wirelessStatus" role="status"></p>
       <ol class="instructions">
@@ -110,7 +111,7 @@
     <details>
       <summary>Use the handheld and reset Emergency Stop</summary>
       <ul>
-        <li>Power both boards with the phone disconnected from receiver Wi-Fi. Release every handheld button, then press a direction.</li>
+        <li>Power both boards with the phone disconnected from receiver Wi-Fi. After a receiver restart, release all buttons, hold Power + Emergency Stop for three seconds, and release both before testing a direction.</li>
         <li>Hold Power On/Off for three seconds and release. Repeat to turn Power off.</li>
         <li>On a master sender, tap Power, then immediately press and hold it for two seconds. Release it and count the LED flashes for the new receiver number.</li>
         <li>After a stop, release all buttons. Hold Power and Emergency Stop together for three seconds, then release both. Press a direction again to test.</li>

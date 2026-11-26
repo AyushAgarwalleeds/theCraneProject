@@ -22,14 +22,19 @@ public:
   }
 
   constexpr bool jog(uint64_t token, uint32_t sequence, uint32_t mask, uint32_t now) {
+    return jog(token, sequence, mask, now, now);
+  }
+
+  constexpr bool jog(uint64_t token, uint32_t sequence, uint32_t mask, uint32_t now, uint32_t arrived) {
     tick(now);
+    if (uint32_t(now - arrived) >= leaseMs) return false;
     if (!token_ || token_ != token || sequence <= sequence_) return false;
     if ((!sequence_ && mask) || mask > 127) {
       revoke();
       return false;
     }
     sequence_ = sequence;
-    updated_ = now;
+    updated_ = arrived;
     requested_ = uint8_t(mask);
     uint8_t selected = requested_ & 64;
     for (int axis = 0; axis < 3; ++axis) {

@@ -110,7 +110,7 @@ let relayMask = null;
 let auxOn = false, auxSeconds = 0, auxHold = 0;
 const pointers = new Map();
 let generation = 0, pendingJog = null, transition = false;
-let connected = false, stopped = false, anotherTab = false, checking = false;
+let connected = false, stopped = false, anotherTab = false, checking = false, stopId = '';
 let handheld = false, settingsBusy = false;
 let phoneConnected = false;
 let latestSettings;
@@ -120,8 +120,8 @@ function render() {
   run.disabled = !connected || transition || stopped || anotherTab;
   run.textContent = token ? 'Web Run on · tap to turn off' : 'Web Run off · tap to enable';
   run.setAttribute('aria-pressed', String(!!token));
-  stop.disabled = !connected || stopped;
-  reset.disabled = !connected || !stopped || transition;
+  stop.disabled = false;
+  reset.disabled = !connected || !stopped || !stopId || transition;
   message.textContent = note;
   controlSource.textContent = !connected ? 'Receiver offline' : stopped ? 'Control locked by Emergency Stop' :
     phoneConnected ? 'Phone Wi‑Fi connected · disconnect Wi‑Fi to use the handheld' : 'Handheld control';
@@ -140,12 +140,13 @@ function render() {
   }
   const minutes = Math.floor(auxSeconds / 60);
   const seconds = String(auxSeconds % 60).padStart(2, '0');
-  auxState.textContent = relayMask === null ? 'Unknown' : auxOn ? 'On · ' + minutes + ':' + seconds + ' idle timeout' : 'Off';
-  auxProgress.hidden = !auxHold;
+  auxState.textContent = !connected || relayMask === null ? 'Unknown' : auxOn ? 'On · ' + minutes + ':' + seconds + ' idle timeout' : 'Off';
+  auxProgress.hidden = !connected || !auxHold;
   auxProgress.value = auxHold;
 }
 
 function updateOutputs(state) {
+  stopId = state.stopped ? state.stopId || '' : '';
   phoneConnected = !!state.phoneConnected;
   relayMask = state.relayMask;
   auxOn = !!state.auxOn;
@@ -279,19 +280,25 @@ for (const button of buttons) {
 }
 
 async function changeStop(action) {
+  if (action === 'reset' && (!connected || !stopId || transition)) return;
+  const fields = action === 'reset' ? {stopId} : {};
   endSession(action === 'stop' ? 'Stopping relays…' : 'Clearing stop…');
   const epoch = generation;
   transition = true;
   render();
   try {
-    const state = await request(action, {});
+    const state = await request(action, fields);
     if (epoch !== generation) return;
     stopped = state.stopped;
     anotherTab = state.armed;
     updateOutputs(state);
     note = stopped ? 'Stop latched.' : 'Stop cleared. Enable Web Run to jog.';
-  } catch {
-    if (epoch === generation) note = 'Receiver did not confirm. Check Wi-Fi and try again.';
+  } catch (error) {
+    if (epoch === generation) {
+      connected = false;
+      stopId = '';
+      note = 'Receiver did not confirm. ' + error.message;
+    }
   } finally {
     if (epoch === generation) {
       transition = false;
@@ -380,8 +387,9 @@ settings.addEventListener('toggle', async () => {
   settingsBusy = true;
   saveButton.disabled = true;
   try {
-    showSettings(await request('settings'));
-    settingsMessage.textContent = '';
+    const data = await request('settings');
+    showSettings(data);
+    settingsMessage.textContent = data.needsReview ? 'Stored settings could not be read. Check the relay assignments and direction control, then save before resetting Stop. Recheck sender pairings.' : '';
   } catch {
     settingsMessage.textContent = 'Could not load settings.';
   } finally {

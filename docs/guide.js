@@ -2,7 +2,7 @@ const usbSteps = [
   {title:'Choose the handheld count', description:'Open USB setup, choose one to four handhelds, and press Start setup.', role:'Receiver'},
   {title:'Upload the receiver', description:'Connect the receiver by USB. Select Connect and upload, choose its port, and wait until pairing is saved.', role:'Receiver'},
   {title:'Upload each handheld', description:'Unplug the receiver. Connect each sender when prompted and complete every sender step in the same tab.', role:'Handheld'},
-  {title:'Save the report and test', description:'Download the setup report. Power the boards, disconnect the phone from receiver Wi-Fi, release all buttons, and test a direction on the bench.', role:'Ready'},
+  {title:'Save the report and test', description:'Download the setup report. Power the boards, disconnect the phone from receiver Wi-Fi, reset the startup Stop, then test a fresh direction press on the bench.', role:'Ready'},
 ];
 const walkthrough = document.querySelector('[data-walkthrough="usb"]');
 let step = 0;
@@ -20,7 +20,7 @@ walkthrough.querySelector('[data-previous]').addEventListener('click', () => { s
 walkthrough.querySelector('[data-step-description]').setAttribute('aria-live', 'polite');
 
 const situations = {
-  handheld:['Ready for the handheld', 'Release all buttons, wait for the receiver link, then press a direction. The phone page can stay closed.'],
+  handheld:['Ready for the handheld', 'After the startup Stop reset, release all buttons, wait for the receiver link, then press a direction. The phone page can stay closed.'],
   phone:['Phone joined to receiver Wi-Fi', 'Handheld motion is paused. Open http://192.168.4.1/ and enable Web Run to jog from the phone. Disconnect from this Wi-Fi to give control back.'],
   loss:['Outputs drop on command expiry', 'Motion and Power turn off when the controlling command stream expires. When the link returns, release the buttons and start a new press.'],
 };
@@ -33,7 +33,7 @@ document.querySelectorAll('[data-mode-choice]').forEach(button => button.addEven
 }));
 const patterns = {
   searching:'Short flash about once a second. A periodic tone accompanies the search.',
-  connected:'Solid light when the receiver is heard. One short beep accompanies connection. Release the buttons before a fresh command.',
+  connected:'Solid light when the receiver acknowledges fresh handheld packets. One short beep accompanies connection. Release the buttons before a fresh command.',
   lost:'Rapid flashes after link loss. Two short beeps accompany the loss. Confirm receiver power and move back into range.',
   low:'Rapid flashes over the link pattern. Three beeps every 30 seconds while the monitored battery remains low.',
   setup:'Repeating double flash while handheld setup Wi-Fi is active. Radio control is paused in this mode.',

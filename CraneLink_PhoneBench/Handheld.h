@@ -12,6 +12,7 @@
 #include "HandheldIndicators.h"
 #include "MasterSetupPage.h"
 #include "SenderRadioRecovery.h"
+#include "CommandReceipt.h"
 
 class Handheld {
 public:
@@ -49,6 +50,11 @@ public:
     uint32_t now = millis();
     const uint8_t previousRaw = lastRaw_;
     const uint8_t raw = readButtons(now);
+    if (!setupMode_ && setup_.count && (raw & stopCommand) && !stopButtonDown_) {
+      pendingStops_[selected_] = true;
+      receipt_.newStop();
+    }
+    stopButtonDown_ = raw & stopCommand;
     if (raw) recovery_.activity(now);
     if (setupMode_) {
       indicators_.update(now, false, false, batteryEnabled_, portalReady_);
@@ -91,12 +97,15 @@ public:
       Serial.println("Receiver link lost.");
     }
     const bool wakePress = raw && !previousRaw && !recovery_.linked(now);
-    if ((radioResting_ && (raw || recovery_.probe(now))) || wakePress ||
+    const bool missingReplies = nonce_ && uint32_t(now - lastReplyOrStart_) >= SenderRadioRecovery::retryMs;
+    if ((radioResting_ && (raw || recovery_.probe(now))) || wakePress || missingReplies ||
         (!radioResting_ && recovery_.retry(now))) startRadio(now);
     ReceivedFrame item;
+    if (!receipt_.fresh(millis())) requireNeutral(millis());
     for (int n = 0; n < 8 && link_.next(item); ++n) {
       const RadioFrame& frame = item.frame;
-      if (!frame.nonce || frame.sequence || frame.command) continue;
+      const bool receipt = frame.command == commandReceipt || frame.command == stoppedReceipt;
+      if (!frame.nonce || (!receipt && (frame.sequence || frame.command))) continue;
       if (!nonce_) Serial.println("Receiver link found.");
       recovery_.heard(item.arrived);
       if (nonce_ != frame.nonce) {
@@ -105,9 +114,13 @@ public:
           sequence_ = 0;
           sequenceNonce_ = nonce_;
         }
-        needNeutral_ = true;
-        neutralSince_ = now;
-        resetGesture_.requireRelease();
+        receipt_.begin(sequence_);
+        requireNeutral(millis());
+      }
+      if (receipt && receipt_.accept(frame.sequence, sequence_, item.arrived)) {
+        lastReplyOrStart_ = item.arrived;
+        if (receipt_.confirmsStop(frame.command == stoppedReceipt))
+          pendingStops_[selected_] = false;
       }
     }
     // Radio start/stop may block briefly; never compare a callback timestamp with
@@ -118,10 +131,12 @@ public:
       radioResting_ = true;
       recovery_.suspend(now);
     }
-    indicators_.update(now, setup_.count != 0, nonce_ != 0 && !switching_, batteryEnabled_, false, radioResting_);
+    const bool confirmed = nonce_ && receipt_.fresh(now);
+    indicators_.update(now, setup_.count != 0, confirmed && !switching_, batteryEnabled_, false, radioResting_);
     if (!nonce_ || !ready_) return;
-    uint8_t next = command(raw, now);
-    if (switching_) next = waitingForRelease;
+    uint8_t next = confirmed ? command(raw, now) : waitingForRelease;
+    if (pendingStops_[selected_] || (raw & stopCommand)) next = stopCommand;
+    else if (switching_) next = waitingForRelease;
     else if (gesture != ReceiverSelectGesture::normal && next < stopCommand) next &= ~uint8_t(64);
     const uint32_t interval = next == 0 ? 125 : 65;
     if (!sequence_ || next != sent_ || uint32_t(now - lastSend_) >= interval) {
@@ -129,17 +144,25 @@ public:
       if (sequence_ == UINT32_MAX) { startRadio(now); return; }
       sent_ = next;
       lastSend_ = now;
-      if (link_.send(nonce_, ++sequence_, next)) sendErrors_ = 0;
+      if (link_.send(nonce_, ++sequence_, next)) {
+        sendErrors_ = 0;
+        if (next == stopCommand && pendingStops_[selected_]) receipt_.sentStop(sequence_);
+      }
       else if (++sendErrors_ >= 3) startRadio(now);
     }
   }
 
 private:
-  void clearSession(uint32_t now) {
-    nonce_ = 0;
+  void requireNeutral(uint32_t now) {
     needNeutral_ = true;
     neutralSince_ = now;
     resetGesture_.requireRelease();
+  }
+
+  void clearSession(uint32_t now) {
+    nonce_ = 0;
+    receipt_.begin(sequence_);
+    requireNeutral(now);
   }
 
   void stopRadio(uint32_t now) {
@@ -168,7 +191,8 @@ private:
       WiFi.mode(WIFI_OFF);
       Serial.println("ESP-NOW unavailable. Retrying automatically.");
     }
-    recovery_.attempted(millis());
+    lastReplyOrStart_ = millis();
+    recovery_.attempted(lastReplyOrStart_);
   }
 
   void enterSetup(uint32_t now) {
@@ -310,7 +334,7 @@ private:
       sendSetupPage(500, "Could not save the receiver. Try again.");
       return;
     }
-    setup_ = next;
+    replaceSetup(next);
     sendSetupPage(200, "Receiver saved. Add another or finish setup.");
   }
 
@@ -346,9 +370,14 @@ private:
   }
 
   void loadSetup() {
-    if (storage_.getBytesLength("targets-v1") == sizeof(setup_) &&
-        storage_.getBytes("targets-v1", &setup_, sizeof(setup_)) == sizeof(setup_) &&
-        setup_.count && setup_.count <= maxSenders) return;
+    if (storage_.isKey("targets-v1")) {
+      if (storage_.getBytesLength("targets-v1") == sizeof(setup_) &&
+          storage_.getBytes("targets-v1", &setup_, sizeof(setup_)) == sizeof(setup_) &&
+          validSetup(setup_)) return;
+      setup_ = TargetSetup{};
+      Serial.println("Saved receiver list invalid. Re-pair this handheld.");
+      return; // Never select an obsolete receiver from a superseded record.
+    }
     setup_ = TargetSetup{};
     SenderSetup old;
     if (storage_.getBytesLength("setup-v2") == sizeof(old))
@@ -358,14 +387,38 @@ private:
     memcpy(setup_.local, old.local, sizeof(old.local));
     setup_.targets[0].peer = old.peer;
     setup_.count = old.peer.configured() ? 1 : 0;
+    if (!validSetup(setup_)) setup_ = TargetSetup{};
+  }
+
+  bool validSetup(const TargetSetup& setup) const {
+    if (!setup.count || setup.count > maxSenders) return false;
+    const uint8_t zero[6]{};
+    if (memcmp(setup.local, zero, 6) && (setup.local[0] & 3) != 2) return false;
+    uint8_t own[6]{};
+    if (setup.local[0]) memcpy(own, setup.local, 6);
+    else esp_read_mac(own, ESP_MAC_WIFI_STA);
+    for (int i = 0; i < setup.count; ++i) {
+      const auto& target = setup.targets[i];
+      if (!target.peer.configured() || !memcmp(own, target.peer.mac, 6) ||
+          !memchr(target.name, 0, sizeof(target.name))) return false;
+      for (const char* c = target.name; *c; ++c)
+        if (!(isAlphaNumeric(static_cast<unsigned char>(*c)) || *c == '-')) return false;
+      for (int j = 0; j < i; ++j)
+        if (!memcmp(target.peer.mac, setup.targets[j].peer.mac, 6)) return false;
+    }
+    return true;
   }
 
   void activate(uint8_t slot, uint32_t now, bool show = true, bool newSearch = true) {
     selected_ = slot;
-    if (newSearch) recovery_.begin(now);
+    if (newSearch) { recovery_.begin(now); lastReplyOrStart_ = now; }
     sendErrors_ = 0;
-    nonce_ = sequenceNonce_ = 0;
-    sequence_ = 0;
+    if (newSearch) {
+      sequenceNonce_ = 0;
+      sequence_ = 0;
+    }
+    nonce_ = 0;
+    receipt_.begin(sequence_);
     needNeutral_ = true;
     neutralSince_ = now;
     resetGesture_.requireRelease();
@@ -426,7 +479,7 @@ private:
       }
       if (!saveSetup(pending_)) return;
       if (nonce_) link_.send(nonce_, ++sequence_, waitingForRelease);
-      setup_ = pending_;
+      replaceSetup(pending_);
       expectedTargets_ = 0;
       activate(0, millis());
       Serial.println("CL TARGETS SAVED");
@@ -479,6 +532,9 @@ private:
       return;
     }
     if (line == "setup-info") {
+      Serial.printf("CL RELEASE %u\n", firmwareRelease);
+      Serial.printf("CL RECEIPT %u %u\n", unsigned(nonce_ && receipt_.fresh(millis())),
+                    unsigned(pendingStops_[selected_]));
       Serial.printf("CL PROTOCOL %u\n", unsigned(wireVersion));
       Serial.println("CL FEATURES MASTER BATTERY WIRELESS");
       Serial.printf("CL HEALTH %u %lu %lu %u %u %lu\n", unsigned(esp_reset_reason()),
@@ -545,7 +601,7 @@ private:
       if (!changeMac) activate(selected_, millis(), false);
       return;
     }
-    setup_ = next;
+    replaceSetup(next);
     Serial.println("CL PAIRED");
     if (changeMac) {
       Serial.flush();
@@ -560,6 +616,16 @@ private:
                   unsigned(radioChannel), setup_.count ? formatMac(setup_.targets[selected_].peer.mac).c_str() : "not set");
   }
 
+  void replaceSetup(const TargetSetup& next) {
+    bool pending[maxSenders]{};
+    for (int i = 0; i < next.count; ++i)
+      for (int j = 0; j < setup_.count; ++j)
+        if (!memcmp(next.targets[i].peer.mac, setup_.targets[j].peer.mac, 6))
+          pending[i] = pendingStops_[j];
+    memcpy(pendingStops_, pending, sizeof(pending));
+    setup_ = next;
+  }
+
   RadioLink link_;
   Preferences storage_;
   WebServer portal_{80};
@@ -569,9 +635,12 @@ private:
   bool setupMode_ = false, portalReady_ = false, restartPending_ = false, portalRoutesAdded_ = false;
   bool setupReleased_ = false, setupExitPressed_ = false, setupArmed_ = false, stopSetupHeld_ = false;
   uint32_t stopSetupAt_ = 0, radioStarts_ = 0;
+  uint32_t lastReplyOrStart_ = 0;
   bool radioResting_ = false;
   uint8_t sendErrors_ = 0;
   SenderRadioRecovery recovery_;
+  CommandReceipt receipt_;
+  bool pendingStops_[maxSenders]{}, stopButtonDown_ = false;
   TargetSetup setup_, pending_;
   HandheldIndicators indicators_;
   ReceiverSelectGesture selectGesture_;

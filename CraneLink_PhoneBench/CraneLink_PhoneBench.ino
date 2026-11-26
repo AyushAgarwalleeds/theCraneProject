@@ -55,11 +55,16 @@ uint8_t radioSendErrors = 0;
 SerialLine serialLine;
 struct RadioSession {
   uint64_t nonce = 0;
+  uint64_t observedStop = 0;
   uint32_t received = 0, sequence = 0;
   bool neutral = false, holding = false, stopHeld = false, resetSeen = false;
 };
 RadioSession radioSessions[maxSenders];
 uint32_t lastBeacon = 0;
+bool sendReceipt = false;
+// Only the main loop handles Stop and reset. A new Stop invalidates a reset
+// request from a page that observed a previous latch, even across receiver boots.
+uint64_t stopId = 0;
 PeerSettings pendingPeers[maxSenders];
 int pendingPeerCount = 0, receivedPeerCount = 0;
 
@@ -72,11 +77,12 @@ struct LegacyOptions {
 struct ReceiverOptions {
   uint16_t idleMinutes = 60;
   uint8_t assignment[7] = {0, 1, 2, 3, 4, 5, 6};
-  bool interlock = false;
+  uint8_t interlock = 0; // One byte in the existing options-v2 NVS record.
   PeerSettings senders[maxSenders];
 };
 
 ReceiverOptions options;
+bool settingsNeedReview = false;
 
 struct NetworkSettings {
   char name[13]{};
@@ -94,6 +100,11 @@ void sendState(const RelayState& state) {
   json += String(",\"relayMask\":") + String(state.relayMask);
   json += state.armed ? ",\"armed\":true" : ",\"armed\":false";
   json += state.stopped ? ",\"stopped\":true" : ",\"stopped\":false";
+  if (state.stopped) {
+    char field[36];
+    snprintf(field, sizeof(field), ",\"stopId\":\"%016llx\"", static_cast<unsigned long long>(stopId));
+    json += field;
+  }
   json += state.handheld ? ",\"handheld\":true" : ",\"handheld\":false";
   json += phoneConnected ? ",\"phoneConnected\":true" : ",\"phoneConnected\":false";
   json += state.auxOn ? ",\"auxOn\":true" : ",\"auxOn\":false";
@@ -140,11 +151,19 @@ uint64_t randomToken() {
 }
 
 bool validOptions(const ReceiverOptions& next) {
-  if (!next.idleMinutes || next.idleMinutes > 720) return false;
+  if (!next.idleMinutes || next.idleMinutes > 720 || next.interlock > 1) return false;
   unsigned used = 0;
   for (uint8_t relay : next.assignment) {
     if (relay > 6 || (used & (1u << relay))) return false;
     used |= 1u << relay;
+  }
+  const PeerSettings empty{};
+  for (int i = 0; i < maxSenders; ++i) {
+    const auto& peer = next.senders[i];
+    if (!memcmp(&peer, &empty, sizeof(peer))) continue;
+    if (!peer.configured() || !memcmp(peer.mac, receiverMac, 6)) return false;
+    for (int j = 0; j < i; ++j)
+      if (!memcmp(peer.mac, next.senders[j].mac, 6)) return false;
   }
   return true;
 }
@@ -212,18 +231,23 @@ void tickRadio() {
     const uint64_t token = firstHandheldToken + item.slot;
     const uint8_t mask = frame.command;
     if (frame.nonce != control.nonce || frame.sequence <= control.sequence || mask > waitingForRelease) continue;
-    control.sequence = frame.sequence;
-    control.received = item.arrived;
-    control.stopHeld = mask == stopCommand;
-    const bool newReset = mask == resetStopCommand && !control.resetSeen;
-    control.resetSeen = mask == resetStopCommand;
     if (mask == waitingForRelease) relays.senderDisconnected(token);
     relays.senderFrame(item.slot, item.arrived, [&](PhoneSession& session, uint32_t time) {
+      control.sequence = frame.sequence;
+      control.received = item.arrived;
+      if (mask == stopCommand && !control.stopHeld) {
+        stopId = randomToken();
+        control.observedStop = stopId;
+      }
+      control.stopHeld = mask == stopCommand;
+      const bool newReset = mask == resetStopCommand && !control.resetSeen;
+      control.resetSeen = mask == resetStopCommand;
       if (mask == stopCommand) {
         session.stop();
         for (auto& sender : radioSessions) sender.neutral = sender.holding = false;
       } else if (mask == resetStopCommand) {
-        if (newReset && session.stopped() && !senderStopHeld(time)) {
+        if (newReset && !settingsNeedReview && session.stopped() &&
+            control.observedStop == stopId && !senderStopHeld(time)) {
           session.reset();
           for (auto& sender : radioSessions) sender.neutral = sender.holding = false;
         }
@@ -247,7 +271,7 @@ void tickRadio() {
           control.holding = true;
         }
         if (frame.sequence == UINT32_MAX ||
-            !session.jog(token, frame.sequence + 1, mask, time)) {
+            !session.jog(token, frame.sequence + 1, mask, time, item.arrived)) {
           session.end(token);
           control.neutral = control.holding = false;
         }
@@ -258,9 +282,13 @@ void tickRadio() {
   }
   if (uint32_t(millis() - lastBeacon) >= 100) {
     lastBeacon = millis();
+    sendReceipt = !sendReceipt;
+    const uint8_t receipt = sendReceipt && relays.state().stopped ? stoppedReceipt : commandReceipt;
     bool failed = false;
     for (int slot = 0; slot < maxSenders; ++slot) {
-      if (radio.paired(slot) && !radio.send(radioSessions[slot].nonce, 0, 0, slot)) failed = true;
+      const auto& session = radioSessions[slot];
+      if (radio.paired(slot) && !radio.send(session.nonce, sendReceipt ? session.sequence : 0,
+                                           sendReceipt ? receipt : 0, slot)) failed = true;
     }
     radioSendErrors = failed ? radioSendErrors + 1 : 0;
     if (radioSendErrors >= 5) {
@@ -284,6 +312,7 @@ void sendSettings() {
   json += options.interlock ? "\",\"interlock\":true" : "\",\"interlock\":false";
   json += String(",\"channel\":") + String(radioChannel);
   json += radioReady ? ",\"radioReady\":true" : ",\"radioReady\":false";
+  json += settingsNeedReview ? ",\"needsReview\":true" : ",\"needsReview\":false";
   json += ",\"senders\":[";
   for (int slot = 0; slot < maxSenders; ++slot) {
     if (slot) json += ",";
@@ -298,7 +327,8 @@ void sendSettings() {
   sendJson(200, json);
 }
 
-bool saveOptions(const ReceiverOptions& next) {
+bool saveOptions(const ReceiverOptions& next, bool reviewed = false) {
+  if ((settingsNeedReview && !reviewed) || !validOptions(next)) return false;
   Preferences prefs;
   return prefs.begin("cranelink-bench", false) &&
          prefs.putBytes("options-v2", &next, sizeof(next)) == sizeof(next);
@@ -370,11 +400,12 @@ void saveSettings() {
     sendJson(409, "{\"error\":\"Turn AUX off before changing relay assignments.\"}");
     return;
   }
-  if (!saveOptions(next)) {
+  if (!saveOptions(next, true)) {
     sendJson(500, "{\"error\":\"Settings could not be saved.\"}");
     return;
   }
   options = next;
+  settingsNeedReview = false;
   relays.configure(options.assignment, options.idleMinutes, options.interlock);
   sendSettings();
 }
@@ -411,6 +442,7 @@ void receiverSerial(String line) {
     return;
   }
   if (line == "setup-info") {
+    Serial.printf("CL RELEASE %u\n", firmwareRelease);
     if (apReady) Serial.printf("CL WIFI %s %s %s\n", ssid, password, WiFi.softAPIP().toString().c_str());
     else Serial.println("CL WIFI DOWN");
     Serial.println("CL FEATURES NETWORK");
@@ -636,31 +668,37 @@ void startAp() {
 }
 
 void setup() {
+  const bool outputsReady = RelayController::prepareOutputs();
   Serial.begin(115200);
   Serial.printf("Receiver reset reason: %d\n", int(esp_reset_reason()));
+  esp_read_mac(receiverMac, ESP_MAC_WIFI_STA);
   Preferences prefs;
-  if (prefs.begin("cranelink-bench", true)) {
+  if (prefs.begin("cranelink-bench", false)) {
     ReceiverOptions stored;
     LegacyOptions old;
-    if (prefs.getBytesLength("options-v2") == sizeof(stored) &&
-        prefs.getBytes("options-v2", &stored, sizeof(stored)) == sizeof(stored) && validOptions(stored)) {
-      options = stored;
-    } else if (prefs.getBytesLength("options-v1") == sizeof(old) &&
-               prefs.getBytes("options-v1", &old, sizeof(old)) == sizeof(old)) {
-      stored.idleMinutes = old.idleMinutes;
-      memcpy(stored.assignment, old.assignment, sizeof(old.assignment));
-      stored.senders[0] = old.sender;
-      if (validOptions(stored)) options = stored;
+    if (prefs.isKey("options-v2")) {
+      settingsNeedReview = prefs.getBytesLength("options-v2") != sizeof(stored) ||
+                           prefs.getBytes("options-v2", &stored, sizeof(stored)) != sizeof(stored) ||
+                           !validOptions(stored);
+      if (!settingsNeedReview) options = stored;
+    } else if (prefs.isKey("options-v1")) {
+      settingsNeedReview = true;
+      if (prefs.getBytesLength("options-v1") == sizeof(old) &&
+          prefs.getBytes("options-v1", &old, sizeof(old)) == sizeof(old)) {
+        stored.idleMinutes = old.idleMinutes;
+        memcpy(stored.assignment, old.assignment, sizeof(old.assignment));
+        stored.senders[0] = old.sender;
+        if (validOptions(stored)) { options = stored; settingsNeedReview = false; }
+      }
     }
     prefs.end();
-  }
-  relaysReady = relays.begin(options.assignment, options.idleMinutes, options.interlock);
+  } else settingsNeedReview = true;
+  relaysReady = outputsReady && relays.begin(options.assignment, options.idleMinutes, options.interlock);
   if (!relaysReady) {
     Serial.println("\nRelay initialization failed. Web Run is unavailable.");
     return;
   }
   Serial.println("\nCraneLink Phone Bench. Physical relay outputs enabled.");
-  esp_read_mac(receiverMac, ESP_MAC_WIFI_STA);
   uint64_t id = 0;
   for (uint8_t byte : receiverMac) id = (id << 8) | byte;
   for (int i = 9; i >= 0; --i) {
@@ -697,11 +735,21 @@ void setup() {
   server.on("/api/end", HTTP_POST, handleEnd);
   server.on("/api/stop", HTTP_POST, [] {
     if (!allowPost()) return;
+    stopId = randomToken();
     for (auto& sender : radioSessions) sender.neutral = sender.holding = false;
     sendState(relays.update([](PhoneSession& session, uint32_t) { session.stop(); }));
   });
   server.on("/api/reset", HTTP_POST, [] {
     if (!allowPost()) return;
+    if (settingsNeedReview) {
+      sendJson(409, "{\"error\":\"Stored configuration unavailable. Review and save relay settings before resetting Stop.\"}");
+      return;
+    }
+    uint64_t observedStop = 0;
+    if (!readToken(server.arg("stopId"), observedStop) || stopId != observedStop) {
+      sendJson(409, "{\"error\":\"Stop changed. Read the current status before resetting.\"}");
+      return;
+    }
     if (senderStopHeld(millis())) {
       sendJson(409, "{\"error\":\"Release Emergency Stop on the handheld first.\"}");
       return;
@@ -712,6 +760,7 @@ void setup() {
     }));
   });
   startAp();
+  stopId = randomToken();
   tryRadio();
   startRuntimeWatchdog();
 }

@@ -3,6 +3,7 @@
 #include "StopResetGesture.h"
 #include "ReceiverSelectGesture.h"
 #include "SenderRadioRecovery.h"
+#include "CommandReceipt.h"
 
 namespace {
 constexpr bool ownerAndExpiry() {
@@ -171,4 +172,44 @@ constexpr bool overnightSearchResumes() {
 static_assert(recoveryAcrossRollover(), "Radio leases and retries must survive millis rollover.");
 static_assert(connectedForFullDay(), "An idle connected handheld must not suspend its radio.");
 static_assert(overnightSearchResumes(), "An out-of-range handheld must keep searching and accept a returning receiver.");
+
+constexpr bool receiptRequiresProgress() {
+  CommandReceipt receipt;
+  const uint32_t start = UINT32_MAX - 100;
+  receipt.begin(20);
+  if (receipt.accept(19, 21, start) || receipt.accept(22, 21, start) || receipt.fresh(start)) return false;
+  if (!receipt.accept(21, 22, start) || !receipt.fresh(start + 649)) return false;
+  if (receipt.accept(21, 24, start + 649) || receipt.fresh(start + 650)) return false;
+  receipt.newStop();
+  receipt.sentStop(24);
+  if (!receipt.accept(23, 24, start + 660) || receipt.confirmsStop(true)) return false;
+  receipt.sentStop(25);
+  if (!receipt.accept(24, 25, start + 670) || receipt.confirmsStop(false) || !receipt.confirmsStop(true)) return false;
+  receipt.begin(25);
+  return !receipt.accept(25, 26, start + 680) && !receipt.confirmsStop(true);
+}
+
+constexpr bool queueDelayDoesNotRenewLease() {
+  PhoneSession session;
+  const uint32_t start = UINT32_MAX - 100;
+  session.stop();
+  if (session.arm(1, start)) return false;
+  session.reset();
+  return session.arm(1, start) && session.jog(1, 1, 0, start) &&
+         session.jog(1, 2, 1, start + 170, start + 10) &&
+         !session.tick(start + 659) && session.tick(start + 660) == 1 && !session.mask();
+}
+
+constexpr bool resetWindowCannotRepeat() {
+  StopResetGesture gesture;
+  gesture.update(0, 0);
+  gesture.update(192, 1);
+  gesture.update(192, 3001);
+  gesture.update(0, 3002);
+  return gesture.update(0, 3027) && !gesture.update(0, 3300) &&
+         !gesture.update(0, 3027); // same tick value after a full millis cycle
+}
+static_assert(receiptRequiresProgress(), "Stale or future receipts cannot renew the link or acknowledge a new Stop.");
+static_assert(queueDelayDoesNotRenewLease(), "Expire a radio jog from arrival even when the receiver loop processes it later.");
+static_assert(resetWindowCannotRepeat(), "A completed reset must not repeat after millis wraps.");
 }

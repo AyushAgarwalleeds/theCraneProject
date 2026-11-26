@@ -13,6 +13,9 @@ constexpr uint8_t radioChannel = 6;
 constexpr uint8_t stopCommand = 128;
 constexpr uint8_t resetStopCommand = 129;
 constexpr uint8_t waitingForRelease = 130;
+// Receiver-only frames. Older handhelds continue to use the plain beacons.
+constexpr uint8_t commandReceipt = 131, stoppedReceipt = 132;
+constexpr unsigned firmwareRelease = 8;
 constexpr uint8_t wireVersion = 4;
 constexpr int maxSenders = 4;
 

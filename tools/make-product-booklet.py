@@ -264,7 +264,7 @@ class Booklet:
             raise RuntimeError(f"Content crosses footer on page {self.page}: {self.y:.1f}")
         self.c.setStrokeColor(LINE)
         self.c.line(self.margin, 30, self.width - self.margin, 30)
-        self.text(self.margin, self.height - 18, "CRANELINK  ·  EDITION 2", 7.5, MUTED)
+        self.text(self.margin, self.height - 18, "CRANELINK  ·  EDITION 3", 7.5, MUTED)
         self.text(self.width - self.margin - 14, self.height - 18, str(self.page), 8, MUTED, True)
         self.c.showPage()
 
@@ -284,7 +284,7 @@ b.y += 8
 b.p("<b>Find your next step</b>")
 b.p("First setup 3 · Controls 4 · Wireless pairing 6-7<br/>Sender wiring 8 · Receiver wiring 9 · Battery 10-12<br/>Settings 13 · Troubleshooting 14 · Equipment record 16", small=True)
 b.note("Keep relay contacts disconnected from machinery and 110 V wiring during setup and testing. Crane service requires an independent safety-rated stop circuit and a qualified controls review.")
-b.p("Online help and installer<br/><b>thecraneproject.vercel.app</b><br/>Guide edition 2 · 20 November 2026", small=True)
+b.p("Online help and installer<br/><b>thecraneproject.vercel.app</b><br/>Guide edition 3 · 26 November 2026", small=True)
 
 b.start("Before you connect.")
 b.table(["Have ready", "What it is for"], [
@@ -305,7 +305,7 @@ b.steps([
     "Open <b>thecraneproject.vercel.app</b>. Under <b>Install and pair</b>, choose one to four handhelds and press <b>Start setup</b>.",
     "Connect the receiver's USB port. Choose <b>Connect and upload</b>, pick its port, and wait for pairing to be saved.",
     "Unplug the receiver. Connect and upload each sender when prompted. Complete every sender in the same browser tab.",
-    "Choose <b>Download PDF</b> to keep the private setup report. Disconnect USB and power the boards. Release all handheld buttons before testing a direction.",
+    "Choose <b>Download PDF</b> to keep the private setup report. Power the boards. Reset the startup Stop (page 4), then test a fresh direction press.",
 ])
 b.note("This workflow replaces the receiver's sender list. For adding a master to existing receivers, use the wireless process on pages 6-7.")
 b.h("Save the private report")
@@ -314,7 +314,7 @@ b.h("If the upload stops")
 b.p("After a successful upload with failed pairing, reconnect the same board and use <b>Retry pairing only</b> in the same tab. Use a full upload if the installer reports older firmware.")
 b.p("Keep BOOT released after uploading. Tap EN/RESET once if the board stays in upload mode. Close other apps or tabs using the USB port.")
 
-b.start("Know your buttons.", "Power both boards with the phone disconnected from receiver Wi-Fi. Release all buttons before the first direction press.")
+b.start("Know your buttons.", "After every receiver restart, all outputs are commanded off. Reset Emergency Stop as shown below. Disconnect the phone from receiver Wi-Fi for handheld control.")
 b.table(["Action", "What to do"], [
     ["Direction", "Hold to jog. Release to stop that direction. Its relay and R8 follow the hold."],
     ["Power On/Off", "Hold for 3 seconds and release. Repeat the hold to toggle it off."],
@@ -327,7 +327,7 @@ b.h("Power stays latched")
 b.p("Power defaults to 60 minutes of inactivity. Accepted directions and Power holds count as activity. Emergency Stop, loss of the controlling link, or receiver reboot also clears Power.")
 b.note("On a master handheld, commands and Emergency Stop address the selected receiver. Count the receiver-number flashes before testing a direction.")
 
-b.start("Use your phone.", "The handheld works directly after power-up. The phone takes over when it joins the receiver's Wi-Fi.")
+b.start("Use your phone.", "Reset Emergency Stop after receiver startup. The phone takes over when it joins the receiver's Wi-Fi.")
 b.steps([
     "Join the receiver Wi-Fi named in your private setup report. Choose to stay connected if the phone reports no internet.",
     "Open <b>http://192.168.4.1/</b>. Confirm the page says <b>CraneLink Phone Bench</b>.",
@@ -352,7 +352,7 @@ b.steps([
     "Tap <b>Generate pairing key</b>. Keep the <b>Receiver station MAC</b> and the <b>Shared key</b> available before tapping <b>Save sender slot</b>.",
 ])
 b.note("Each receiver needs its own 32-character hexadecimal key. Register the same key on both sides. Copy the key before saving because the settings page clears it.")
-b.p("Receivers on CraneLink radio protocol 4 can use their existing settings page. Continue with handheld entry on page 7.")
+b.p("Update every installed receiver to release 8 before its handhelds. A release 8 handheld requires receiver acknowledgments for motion and Power. Continue on page 7.")
 
 b.start("Save it on the<br/>handheld.")
 b.steps([
@@ -411,7 +411,7 @@ b.table(["Part", "Connection"], [
 ], [105, b.body_width - 105])
 b.table(["State", "LED / sound"], [
     ["Searching", "Short flash about once a second; periodic search tone. After a minute out of range: brief flash about every 3 seconds."],
-    ["Receiver heard", "Solid light; one short beep on connection."],
+    ["Commands acknowledged", "Solid light while the receiver acknowledges fresh packets. One beep on connection."],
     ["Link lost", "Rapid flash; two short beeps on loss."],
     ["Receiver selected", "One to four flashes identify the saved receiver number."],
     ["Setup Wi-Fi", "Repeating double flash while setup is active."],
@@ -449,10 +449,10 @@ b.steps([
     "Inspect connections, power leads and battery condition. Confirm the receiver label and the handheld receiver-number flashes.",
     "Test each direction and release. Verify the matching relay and R8 energize and then release.",
     "Toggle Power with a 3-second hold. Test Emergency Stop while outputs are active. Meter that every output releases.",
-    "Reset Stop and confirm a fresh press is needed. Test a lost controlling link, then reconnect and release the controls before a new press.",
+    "Test receiver reboot and link loss. Measure contact release. Return with a button held and check a fresh press is needed. Repeat at the end of a 12-hour battery bench test.",
 ])
 b.h("Replace a handheld")
-b.p("Update the replacement using <b>Update handheld firmware</b>. Put its new Station MAC and a new key in the old handheld's slot on each receiver. Add those receiver MACs and keys through handheld Wi-Fi setup.")
+b.p("For a blank handheld choose <b>Install on a new handheld</b>. Put its new Station MAC and a new key in the old handheld's slot on each receiver. Add those receiver MACs and keys through handheld Wi-Fi setup.")
 b.h("Replace a receiver")
 b.p("Use <b>Install and pair</b> and complete the handheld steps in that same session. Restore relay settings. Add the replacement's MAC and key to a master through wireless setup. Use the USB master wizard to rebuild a full four-entry receiver list.")
 b.p("Keep the private setup report and the equipment record. Both are specific to your boards. The guide describes the current bench firmware and does not certify a machinery installation.", small=True)

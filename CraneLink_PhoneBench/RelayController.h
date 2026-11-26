@@ -30,7 +30,7 @@ struct RelayState {
 
 class RelayController {
 public:
-  bool begin(const uint8_t* assignment, uint16_t idleMinutes, bool interlock) {
+  static bool prepareOutputs() {
     // Preload the inactive level before enabling the outputs.
     gpio_config_t config{};
     config.mode = GPIO_MODE_OUTPUT;
@@ -41,10 +41,15 @@ public:
       if (gpio_set_level(pin, levelFor(false)) != ESP_OK) return false;
       config.pin_bit_mask |= 1ULL << pin;
     }
-    if (gpio_config(&config) != ESP_OK) return false;
+    return gpio_config(&config) == ESP_OK;
+  }
 
+  bool begin(const uint8_t* assignment, uint16_t idleMinutes, bool interlock) {
     setOptions(assignment, idleMinutes);
     session_.setInterlock(interlock);
+    // Every receiver restart requires an operator reset, including after a
+    // brownout or watchdog reset while the software Stop was latched.
+    session_.stop();
     mutex_ = xSemaphoreCreateMutex();
     return mutex_ &&
            xTaskCreate(monitor, "relay-expiry", 3072, this, 2, nullptr) == pdPASS;
@@ -92,6 +97,7 @@ public:
   template<class Change>
   void senderFrame(int slot, uint32_t arrived, Change change) {
     update([&](PhoneSession& session, uint32_t now) {
+      if (uint32_t(now - arrived) >= PhoneSession::leaseMs) return;
       senderSeen_[slot] = arrived;
       change(session, now);
     });

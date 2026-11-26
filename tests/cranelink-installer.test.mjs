@@ -5,6 +5,8 @@ import {createContext, runInContext} from 'node:vm';
 import {acknowledge, FirmwareUpdateRequired, identify, probeRole, readBoardInfo, withBoard} from '../docs/serial.mjs';
 import {buildReport} from '../docs/report.mjs';
 import {PDFDocument} from '../docs/vendor/pdf-lib.mjs';
+import {createHash} from 'node:crypto';
+import {firmwareImages} from '../docs/firmware/release-8.mjs';
 
 function usbDevice(onLine) {
   let output;
@@ -169,22 +171,71 @@ test('firmware-only updates keep saved identities and never send pairing or netw
     const port = usbDevice(line => {
       commands.push(line);
       if (line === 'identify') return [`CL IDENT ${role.toUpperCase()} 02:00:00:00:00:01 10:00:00:00:00:01\n`];
-      return ['CL PROTOCOL 4\nCL INFO DONE\n'];
+      return ['CL RELEASE 8\nCL PROTOCOL 4\nCL INFO DONE\n'];
     });
     const element = () => ({addEventListener() {}, classList:{toggle() {}}});
     const ctx = createContext({acknowledge, FirmwareUpdateRequired, identify, probeRole, readBoardInfo, withBoard,
       document:{getElementById:element}, supported:true,
-      mockFlash:async (_, kind, options) => { flashes.push([kind, options.exclude]); return '10:00:00:00:00:01'; },
+      mockFlash:async (_, kind, options) => {
+        flashes.push([kind, options.exclude, options.expectedFactory]);
+        return '10:00:00:00:00:01';
+      },
       port, role});
     const script = readFileSync(new URL('../docs/setup.js', import.meta.url), 'utf8').replace(/^import .*;\r?\n/gm, '');
     runInContext(script, ctx);
     runInContext('flash = mockFlash', ctx);
     const board = await runInContext('updateExistingBoard(port, role, {}, () => {})', ctx);
     assert.equal(board.mac, '02:00:00:00:00:01');
-    assert.deepEqual(flashes, [[role, null]]);
+    assert.deepEqual(flashes, [[role, null, '10:00:00:00:00:01']]);
     assert.deepEqual(commands, ['identify', 'identify', 'setup-info']);
     await assert.rejects(runInContext("updateExistingBoard(port, role === 'sender' ? 'receiver' : 'sender', {}, () => {})", ctx),
       /Connect the .* selected for this update/);
     assert.equal(flashes.length, 1);
   }
+});
+
+test('upload checks all images before writing, checks board identity and verifies flash readback', async () => {
+  const factory = '10:00:00:00:00:01';
+  let damagedDownload = false, badFlash = false, writes = 0;
+  let programmed = new Map();
+  class Loader {
+    chip = {CHIP_NAME:'ESP32', readMac:async () => factory};
+    async main() { return 'ESP32'; }
+    async detectFlashSize() { return '4MB'; }
+    async writeFlash({fileArray, eraseAll}) {
+      assert.equal(eraseAll, false);
+      programmed = new Map(fileArray.map(image => [image.address, image.data]));
+      ++writes;
+    }
+    async flashMd5sum(address, length) {
+      const data = programmed.get(address);
+      assert.equal(length, data.length);
+      return badFlash ? '0'.repeat(32) : createHash('md5').update(data).digest('hex');
+    }
+  }
+  const element = () => ({addEventListener() {}, classList:{toggle() {}}});
+  const ctx = createContext({document:{getElementById:element}, supported:true, crypto, firmwareImages,
+    useAndroidUsb:false, ESPLoader:Loader, Transport:class {}, port:{}, factory,
+    fetch:async url => {
+      const data = readFileSync(new URL('../docs/' + url.split('?')[0], import.meta.url));
+      if (damagedDownload && url.includes('app.bin?')) data[data.length - 1] ^= 1;
+      return new Response(data);
+    }});
+  const script = readFileSync(new URL('../docs/setup.js', import.meta.url), 'utf8').replace(/^import .*;\r?\n/gm, '');
+  runInContext(script, ctx);
+  const upload = (role, identity) => {
+    ctx.role = role;
+    ctx.identity = identity;
+    return runInContext('flash(port, role, {expectedFactory:identity, reportStatus() {}})', ctx);
+  };
+  damagedDownload = true;
+  await assert.rejects(upload('sender', factory), /does not match release/);
+  damagedDownload = false;
+  await assert.rejects(upload('receiver', '10:00:00:00:00:02'), /changed before upload/);
+  assert.equal(writes, 0);
+  badFlash = true;
+  await assert.rejects(upload('receiver', factory), /Flash verification failed/);
+  badFlash = false;
+  for (const role of ['receiver', 'sender']) assert.equal(await upload(role, factory), factory);
+  assert.equal(writes, 3);
 });

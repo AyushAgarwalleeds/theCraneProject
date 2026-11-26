@@ -18,7 +18,8 @@ public:
       ready_ = true;
       timing_ = held_ = false;
       const uint32_t elapsed = now - releasedAt_;
-      return releasing_ && elapsed >= 25 && elapsed < 275;
+      if (elapsed >= 275) releasing_ = false;
+      return releasing_ && elapsed >= 25;
     }
     releasing_ = false;
     if (!ready_ || (raw & ~buttons)) {

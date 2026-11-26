@@ -2,6 +2,12 @@
 
 This sketch builds two roles for classic ESP32-WROOM boards. The receiver operates the physical relay module from the phone or an ESP-NOW handheld. Keep the relay contacts disconnected from the crane and the 110 V circuit.
 
+## Release 8 and daily startup
+
+Update installed receivers first, then their handhelds, using the firmware update buttons. Saved pairings stay in place. A release 8 handheld requires a release 8 receiver for motion and Power. A release 8 receiver also sends the original protocol 4 beacons for older handhelds during the upgrade. Every receiver reboot starts with all outputs commanded off and Stop latched. Release all buttons, hold **Power + Emergency Stop** for three seconds and release both, or use **Reset Emergency Stop** on the receiver page. Give a fresh command after reset. A radio reconnection alone does not require a Stop reset unless Stop was latched.
+
+The handheld accepts advancing, authenticated command receipts from its selected receiver. A short Stop press sampled by a powered handheld stays pending for that receiver until it acknowledges the Stop. Loss of sender power clears its pending requests. USB diagnostics report whether the receiver is heard, whether it acknowledged packets, and whether Stop delivery is pending. Command receipts describe software state. Check physical contact opening and stopping time separately.
+
 ## USB setup website
 
 Open [CraneLink USB Setup](https://thecraneproject.vercel.app/) in desktop Chrome or Edge, or Android Chrome on a phone with USB host support. Use a data cable plugged into the ESP32 development board. Some phones require a USB OTG adapter. Keep Chrome in the foreground during upload. The Android path supports common CP210x, CH340/CH341 and FTDI bridges through WebUSB. Use desktop Chrome or Edge for USB setup if your phone cannot see the board or you use an iPhone or iPad. If you have a local copy of the repository, run `node tools/serve-wizard.mjs` from its root and open the printed localhost address. Close Arduino Serial Monitor before using the site. [ESPHome USB bridge support](https://github.com/esphome/esp-web-tools/pull/750)
@@ -19,7 +25,7 @@ The installer shows the receiver's Wi-Fi name, password, and phone controls addr
 
 ### Add receivers at their installed locations
 
-1. On the [CraneLink installer](https://thecraneproject.vercel.app/#wireless), connect the handheld by USB and choose **Update handheld firmware**. Keep its **Station MAC**, **Setup Wi-Fi name**, and **Setup Wi-Fi password** from the report. This step is needed once for the handheld. Receivers on radio protocol 4 can use their existing phone settings.
+1. On the [CraneLink installer](https://thecraneproject.vercel.app/#wireless), connect the handheld by USB and choose **Update handheld firmware**. Keep its **Station MAC**, **Setup Wi-Fi name**, and **Setup Wi-Fi password** from the report. This step is needed once for the handheld. Update installed receivers to release 8 before using the updated handheld.
 2. With the receiver idle, join its Wi-Fi and open `http://192.168.4.1/`. Open **Settings and sender pairing**. Choose an **Empty slot**, or the existing slot for this same handheld. Paste the handheld’s **Station MAC** into **Sender station MAC**. Tap **Generate pairing key**. Copy the **Shared key** and **Receiver station MAC** before tapping **Save sender slot**. Keep the key private. Each receiver needs its own key.
 3. Release all buttons. Hold **Emergency Stop alone for eight seconds**, then release to open setup. This also latches Stop on the selected receiver. The LED gives a repeating double flash as the setup Wi-Fi runs. Join the handheld’s **CraneLink-TX-…** network using its setup password. If the phone reports no internet, stay on this Wi-Fi. Open or reload `http://192.168.4.1/`. Confirm the header says **Handheld setup**.
 4. Enter a label such as `MH14AB4292`, the **receiver station MAC**, and the **same shared key** from that receiver. Tap **Save receiver** and check the order shown. To add another, join that receiver’s Wi-Fi and repeat the receiver step, then reconnect to handheld Wi-Fi and add the entry. The same receiver MAC updates its entry in place.
@@ -48,7 +54,7 @@ The handheld sends a release to the previous receiver and waits one second befor
 | --- | --- | --- |
 | Receiver selected | One to four flashes, matching the configured order | Link tone follows when heard |
 | Searching | Short flash about once a second | Periodic search tone |
-| Receiver heard | Solid | One short beep on connection |
+| Receiver acknowledged commands | Solid | One short beep on connection |
 | Link lost | Rapid flash | Two short beeps on loss |
 | Low battery | A burst of rapid flashes over the link pattern | Three beeps every 30 seconds |
 
@@ -82,7 +88,7 @@ The default Wi-Fi name is a 10-character code derived from the receiver’s MAC.
 
 ## Everyday use
 
-1. Power both boards with the phone disconnected from the receiver’s Wi-Fi. Release all handheld buttons, then hold a direction. The phone page can stay closed.
+1. Power both boards with the phone disconnected from the receiver’s Wi-Fi. Release all handheld buttons, reset Stop after receiver startup, then hold a direction. The phone page can stay closed.
 2. For phone control, join the receiver’s Wi-Fi and open **http://192.168.4.1/**. Enable **Web Run** before jogging. When finished, disconnect from this Wi-Fi to return control to the handheld. Release any held button and press again.
 3. Hold **Power On/Off** for three seconds and release. Hold it again for three seconds to turn it off. The Power relay also turns off after inactivity or if the controlling link drops.
 4. Press **Emergency Stop** to turn off all eight outputs. To reset using the handheld, release all buttons, hold **Power On/Off + Emergency Stop** together for three seconds, then release both. Reset clears the latch with all outputs off. Press a direction again to jog. You can also use **Reset Emergency Stop** on the phone after releasing the handheld Stop button.
@@ -91,7 +97,7 @@ The sender listens for the receiver automatically after a signal loss. Motion an
 
 ### Long idle periods and out-of-range recovery
 
-- Update an existing handheld using **Update handheld firmware** in the installer. **Update receiver firmware** adds receiver radio recovery and the loop watchdog. These update buttons retain NVS pairing, Wi-Fi and relay settings; **Install and pair** replaces the pairing list.
+- Use **Update receiver firmware** first, then **Update handheld firmware**. For a blank replacement choose **Install on a new handheld**. These update buttons retain NVS pairing, Wi-Fi and relay settings; **Install and pair** replaces the pairing list.
 - While linked, the handheld keeps Wi-Fi sleep disabled. It uses an 80 MHz CPU and sends idle keepalives every 125 ms, with changes sent immediately after input debounce and active commands refreshed every 65 ms.
 - After 60 seconds without a receiver and no button activity, it turns the radio off for 2.2 seconds between listening windows of at least 0.8 seconds. The processor keeps checking buttons. It reconnects automatically when the selected receiver returns, normally within a few seconds. Any button wakes the search; use a **Power tap**, release every button, then make a fresh command. The waking press cannot start a relay command. A linked sender never enters this standby.
 - Failed radio initialization is retried. Three immediate send API errors restart the radio. A subscribed 8-second task watchdog reboots a stalled main loop. These mechanisms cannot recover a battery cutoff or a failed supply.
@@ -107,7 +113,7 @@ Use **USB diagnostics → Check connected board** to check the boards after flas
 1. Open `CraneLink_PhoneBench.ino` from this folder in Arduino IDE. Select **Tools → Board → esp32 → ESP32 Dev Module** with the Espressif Arduino 3.x core. Set `CRANELINK_SENDER` to `0` in **BuildRole.h**, then upload to the receiver.
 2. Open Serial Monitor at **115200 baud**. If you missed the startup output, press the board's **EN** or **RESET** button. The output shows the receiver’s Wi-Fi name and password. The password is kept across reboots.
 3. Join that Wi-Fi on your phone. If prompted, choose to stay connected without internet. Type **http://192.168.4.1/** into the browser address bar.
-4. Tap **Web Run** and hold one direction. Its assigned relay and R8 should energize. Both should release when you lift your finger. **Emergency Stop** turns all eight outputs off and latches stop. **Reset Emergency Stop** clears the latch. Tap Web Run again before starting another jog.
+4. Tap **Reset Emergency Stop** after receiver startup. Then tap **Web Run** and hold one direction. Its assigned relay and R8 should energize. Both should release when you lift your finger. **Emergency Stop** turns all eight outputs off and latches stop. **Reset Emergency Stop** clears the latch. Tap Web Run again before starting another jog.
 
 Use the relay module's specified external supply. For a module with non-isolated logic inputs, connect the module's input ground to ESP32 GND and use inputs compatible with 3.3 V logic. Do not feed 5 V into the ESP32 GPIOs. The sketch defaults to active-low inputs, as in the original code. For active-high inputs, set `relayActiveLow` to `false` in `RelayController.h` before flashing.
 

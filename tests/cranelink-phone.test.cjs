@@ -125,6 +125,21 @@ test('a second tab observes Web Run without joining the existing session', async
   assert.deepEqual(p.calls.map(call => call.path), ['status', 'status']);
 });
 
+test('phone reset uses the latch the operator saw and a rejected reset requires fresh status', async () => {
+  const p = await page();
+  const observed = 'abcdef0123456789';
+  p.mock(path => path === 'status' ? reply({stopped:true, stopId:observed, relayMask:0}) :
+    path === 'reset' ? reply({error:'Stop changed.'}, false) : null);
+  await p.refresh();
+  await p.elements.reset.events.click();
+  assert.deepEqual(p.calls.at(-1), {path:'reset', stopId:observed});
+  assert.equal(p.elements.reset.disabled, true);
+  assert.equal(p.elements.outputs.textContent, 'Unknown');
+  assert.equal(p.elements.stop.disabled, false);
+  await p.elements.reset.events.click();
+  assert.equal(p.calls.filter(call => call.path === 'reset').length, 1);
+});
+
 test('idle status still shows a latched Power relay and its remaining time', async () => {
   const p = await page();
   p.mock(path => path === 'status' ? reply({

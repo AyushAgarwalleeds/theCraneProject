@@ -22,6 +22,12 @@ function reportSections(installed, checked) {
     if (board.resetReason !== undefined)
       rows.push(['Last reset', resets[board.resetReason] || 'Code ' + board.resetReason],
         ['Uptime when read', board.uptime + ' seconds']);
+    if (board.release !== undefined) rows.push(['Firmware release', board.release]);
+    if (board.confirmed !== undefined) {
+      rows.push(['Command receipt', board.confirmed ? 'Receiver acknowledged handheld packets' :
+        board.linked ? 'Receiver heard. Waiting for a reply. Check receiver firmware.' : 'Waiting for receiver']);
+      if (board.stopPending) rows.push(['Stop delivery', 'Waiting for receiver to confirm Stop']);
+    }
     if (board.role === 'receiver') {
       rows.push(['Wi-Fi network', board.ssid || 'Access point unavailable']);
       rows.push(['ESP-NOW', board.ready ? 'Ready' : 'Unavailable']);
